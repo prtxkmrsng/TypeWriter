@@ -22,12 +22,12 @@ data class TypewriterUiState(
     val documents: List<MarkdownDocument> = emptyList(),
     val activeDocument: MarkdownDocument? = null,
     val lines: List<String> = listOf(""),
-    // Maps (lineIndex to colIndex) -> list of previously stamped characters at that cell
     val overstruckCells: Map<Pair<Int, Int>, List<Char>> = emptyMap(),
     val cursorLine: Int = 0,
     val cursorCol: Int = 0,
     val maxCharsPerLine: Int = 68,
     val bellWarningCol: Int = 60,
+    val linesPerPage: Int = 55,
     val themeMode: TypewriterThemeMode = TypewriterThemeMode.LIGHT,
     val isRedRibbon: Boolean = false,
     val isHardcoreMode: Boolean = false,
@@ -38,7 +38,8 @@ data class TypewriterUiState(
     val ribbonSpoolAngle: Float = 0f,
     val lastStruckChar: Char = ' ',
     val wordCount: Int = 0,
-    val charCount: Int = 0
+    val charCount: Int = 0,
+    val exportStatusMessage: String? = null
 )
 
 class TypewriterViewModel(application: Application) : AndroidViewModel(application) {
@@ -123,7 +124,8 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
                     cursorCol = lastColIndex,
                     saveStatus = SaveStatus.SAVED,
                     wordCount = countWords(parsedLines),
-                    charCount = parsedLines.sumOf { line -> line.length }
+                    charCount = parsedLines.sumOf { line -> line.length },
+                    exportStatusMessage = null
                 )
             }
             soundEngine.playCarriageReturn()
@@ -149,7 +151,12 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
 
     fun togglePreviewMode() {
         soundEngine.playSpacebar()
-        _uiState.update { it.copy(isPreviewMode = !it.isPreviewMode) }
+        _uiState.update {
+            it.copy(
+                isPreviewMode = !it.isPreviewMode,
+                exportStatusMessage = null
+            )
+        }
     }
 
     fun toggleMute() {
@@ -158,11 +165,58 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.update { it.copy(isMuted = nextMute) }
     }
 
-    /**
-     * Handles physical character input from the hardware keyboard.
-     * In Hardcore Mode, typing at an existing column overwrites/overstrikes the character
-     * instead of pushing the rest of the line rightwards.
-     */
+    fun exportManuscriptAsPdf() {
+        val state = _uiState.value
+        val folderUri = state.folderUri ?: return
+        val docName = state.activeDocument?.name ?: "Manuscript.md"
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(exportStatusMessage = "PRINTING PDF...") }
+            val savedName = repository.exportToPdf(
+                folderUri = folderUri,
+                documentName = docName,
+                lines = state.lines,
+                linesPerPage = state.linesPerPage
+            )
+            soundEngine.playMarginBell()
+            _uiState.update {
+                it.copy(
+                    exportStatusMessage = if (savedName != null) {
+                        "SAVED $savedName TO MANUSCRIPT FOLDER"
+                    } else {
+                        "PDF EXPORT FAILED"
+                    }
+                )
+            }
+        }
+    }
+
+    fun exportManuscriptAsHtml() {
+        val state = _uiState.value
+        val folderUri = state.folderUri ?: return
+        val docName = state.activeDocument?.name ?: "Manuscript.md"
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(exportStatusMessage = "GENERATING HTML...") }
+            val savedName = repository.exportToHtml(
+                folderUri = folderUri,
+                documentName = docName,
+                lines = state.lines,
+                linesPerPage = state.linesPerPage
+            )
+            soundEngine.playMarginBell()
+            _uiState.update {
+                it.copy(
+                    exportStatusMessage = if (savedName != null) {
+                        "SAVED $savedName TO MANUSCRIPT FOLDER"
+                    } else {
+                        "HTML EXPORT FAILED"
+                    }
+                )
+            }
+        }
+    }
+
     fun onCharacterTyped(char: Char) {
         val state = _uiState.value
         if (state.isPreviewMode) return
@@ -183,7 +237,6 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
                     updatedOverstrikes[key] = (existingHistory + oldChar).takeLast(3)
                 }
             }
-            // If user types '-' or 'x' or 'X' to cross out in hardcore mode, keep overstrike visual
             updatedLine = StringBuilder(currentLine).apply {
                 setCharAt(colIdx, char)
             }.toString()
@@ -193,7 +246,6 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
             }.toString()
         }
 
-        // Check if we hit or exceeded the right margin
         if (updatedLine.length > state.maxCharsPerLine) {
             val lastSpace = updatedLine.lastIndexOf(' ', startIndex = state.maxCharsPerLine - 1)
             val (keptLine, carryOver) = if (lastSpace > state.maxCharsPerLine / 2) {
@@ -203,13 +255,18 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
             }
 
             currentLines[lineIdx] = keptLine
-            currentLines.add(lineIdx + 1, carryOver)
+            val nextLineIdx = lineIdx + 1
+            currentLines.add(nextLineIdx, carryOver)
 
             soundEngine.playCarriageReturn()
+            if (nextLineIdx % state.linesPerPage == 0) {
+                soundEngine.playMarginBell()
+            }
+
             updateLinesAndScheduleSave(
                 lines = currentLines,
                 overstrikes = updatedOverstrikes,
-                newLine = lineIdx + 1,
+                newLine = nextLineIdx,
                 newCol = carryOver.length,
                 struckChar = char
             )
@@ -244,18 +301,20 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
         val lineIdx = state.cursorLine.coerceIn(0, currentLines.lastIndex)
         val currentLine = currentLines[lineIdx]
         val colIdx = state.cursorCol.coerceIn(0, currentLine.length)
+        val nextLineIdx = lineIdx + 1
 
         if (state.isHardcoreMode) {
-            // In hardcore physical mode, pressing Return advances to the start of the next line
-            // without splitting characters to the right of the typehead
             if (lineIdx == currentLines.lastIndex) {
                 currentLines.add("")
             }
             soundEngine.playCarriageReturn()
+            if (nextLineIdx % state.linesPerPage == 0) {
+                soundEngine.playMarginBell()
+            }
             updateLinesAndScheduleSave(
                 lines = currentLines,
                 overstrikes = state.overstruckCells,
-                newLine = lineIdx + 1,
+                newLine = nextLineIdx,
                 newCol = 0,
                 struckChar = '\n',
                 immediateSave = true
@@ -267,24 +326,23 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
         val afterCursor = currentLine.substring(colIdx)
 
         currentLines[lineIdx] = beforeCursor
-        currentLines.add(lineIdx + 1, afterCursor)
+        currentLines.add(nextLineIdx, afterCursor)
 
         soundEngine.playCarriageReturn()
+        if (nextLineIdx % state.linesPerPage == 0) {
+            soundEngine.playMarginBell()
+        }
+
         updateLinesAndScheduleSave(
             lines = currentLines,
             overstrikes = state.overstruckCells,
-            newLine = lineIdx + 1,
+            newLine = nextLineIdx,
             newCol = 0,
             struckChar = '\n',
             immediateSave = true
         )
     }
 
-    /**
-     * Handles Backspace:
-     * - Hardcore Mode: Only moves the carriage 1 column back (so the user can overstrike with 'x' or '-').
-     * - Standard Mode: Deletes the character to the left of the cursor.
-     */
     fun onBackspacePressed() {
         val state = _uiState.value
         if (state.isPreviewMode) return
