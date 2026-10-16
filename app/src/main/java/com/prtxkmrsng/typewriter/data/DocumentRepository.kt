@@ -2,6 +2,11 @@ package com.prtxkmrsng.typewriter.data
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Typeface
+import android.graphics.pdf.PdfDocument
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
@@ -111,4 +116,253 @@ class DocumentRepository(private val context: Context) {
                 false
             }
         }
+
+    /**
+     * Exports the current manuscript as a styled, self-contained HTML file with 55-line page breaks.
+     */
+    suspend fun exportToHtml(
+        folderUri: Uri,
+        documentName: String,
+        lines: List<String>,
+        linesPerPage: Int = 55
+    ): String? = withContext(Dispatchers.IO) {
+        try {
+            val root = DocumentFile.fromTreeUri(context, folderUri) ?: return@withContext null
+            val baseName = documentName.removeSuffix(".md").removeSuffix(".MD").ifBlank { "Manuscript" }
+            val htmlFileName = "$baseName.html"
+
+            root.findFile(htmlFileName)?.delete()
+            val htmlFile = root.createFile("text/html", htmlFileName) ?: return@withContext null
+
+            val pages = lines.chunked(linesPerPage).ifEmpty { listOf(listOf("")) }
+            val htmlContent = buildString {
+                appendLine("<!DOCTYPE html>")
+                appendLine("<html lang=\"en\"><head><meta charset=\"UTF-8\">")
+                appendLine("<title>${escapeHtml(baseName)}</title>")
+                appendLine("<style>")
+                appendLine("""
+                    body {
+                        background: #23221F;
+                        margin: 0;
+                        padding: 32px 16px;
+                        font-family: 'Courier New', Courier, monospace;
+                        color: #1F1E1B;
+                    }
+                    .sheet {
+                        max-width: 760px;
+                        margin: 0 auto 36px auto;
+                        background: #FDFBF5;
+                        padding: 48px 64px;
+                        box-shadow: 0 10px 28px rgba(0,0,0,0.45);
+                        border-left: 3px solid rgba(184, 41, 33, 0.25);
+                        position: relative;
+                        page-break-after: always;
+                    }
+                    .page-header {
+                        display: flex;
+                        justify-content: space-between;
+                        font-size: 12px;
+                        color: #7A7468;
+                        border-bottom: 1px dashed #D5CEC0;
+                        padding-bottom: 8px;
+                        margin-bottom: 24px;
+                    }
+                    .line {
+                        font-size: 16px;
+                        line-height: 26px;
+                        white-space: pre-wrap;
+                        min-height: 26px;
+                    }
+                    h1, h2, h3 {
+                        color: #B82921;
+                        margin: 8px 0 4px 0;
+                        font-weight: bold;
+                    }
+                    blockquote {
+                        margin: 0;
+                        padding-left: 12px;
+                        border-left: 3px solid #B82921;
+                        font-style: italic;
+                        color: #4A453D;
+                    }
+                    code {
+                        background: rgba(0,0,0,0.07);
+                        color: #B82921;
+                        padding: 1px 4px;
+                        border-radius: 3px;
+                    }
+                    @media print {
+                        body { background: none; padding: 0; }
+                        .sheet { box-shadow: none; margin: 0; width: 100%; }
+                    }
+                """.trimIndent())
+                appendLine("</style></head><body>")
+
+                pages.forEachIndexed { pageIdx, pageLines ->
+                    appendLine("<div class=\"sheet\">")
+                    appendLine("<div class=\"page-header\"><span>${escapeHtml(baseName.uppercase())}</span><span>PAGE ${pageIdx + 1} OF ${pages.size}</span></div>")
+                    pageLines.forEach { rawLine ->
+                        val trimmed = rawLine.trimStart()
+                        when {
+                            trimmed.startsWith("### ") ->
+                                appendLine("<h3>${formatInlineHtml(trimmed.removePrefix("### "))}</h3>")
+                            trimmed.startsWith("## ") ->
+                                appendLine("<h2>${formatInlineHtml(trimmed.removePrefix("## "))}</h2>")
+                            trimmed.startsWith("# ") ->
+                                appendLine("<h1>${formatInlineHtml(trimmed.removePrefix("# "))}</h1>")
+                            trimmed.startsWith("> ") ->
+                                appendLine("<blockquote><div class=\"line\">${formatInlineHtml(trimmed.removePrefix("> "))}</div></blockquote>")
+                            else ->
+                                appendLine("<div class=\"line\">${formatInlineHtml(rawLine)}</div>")
+                        }
+                    }
+                    appendLine("</div>")
+                }
+
+                appendLine("</body></html>")
+            }
+
+            context.contentResolver.openOutputStream(htmlFile.uri, "wt")?.bufferedWriter()?.use {
+                it.write(htmlContent)
+            }
+            htmlFileName
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Exports the current manuscript as a paginated PDF (55 lines per page) using Android's PdfDocument.
+     */
+    suspend fun exportToPdf(
+        folderUri: Uri,
+        documentName: String,
+        lines: List<String>,
+        linesPerPage: Int = 55
+    ): String? = withContext(Dispatchers.IO) {
+        val pdfDocument = PdfDocument()
+        try {
+            val root = DocumentFile.fromTreeUri(context, folderUri) ?: return@withContext null
+            val baseName = documentName.removeSuffix(".md").removeSuffix(".MD").ifBlank { "Manuscript" }
+            val pdfFileName = "$baseName.pdf"
+
+            root.findFile(pdfFileName)?.delete()
+            val pdfFile = root.createFile("application/pdf", pdfFileName) ?: return@withContext null
+
+            val pageWidth = 612 // Standard Letter width in PostScript points
+            val pageHeight = 792 // Standard Letter height in PostScript points
+            val leftMargin = 58f
+            val topMargin = 56f
+            val lineHeight = 12.2f
+
+            val paperPaint = Paint().apply {
+                color = Color.rgb(253, 251, 245)
+                style = Paint.Style.FILL
+            }
+            val marginRulePaint = Paint().apply {
+                color = Color.argb(70, 184, 41, 33)
+                strokeWidth = 1.2f
+            }
+            val headerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
+                textSize = 8.5f
+                color = Color.rgb(120, 114, 104)
+            }
+            val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
+                textSize = 10f
+                color = Color.rgb(31, 30, 27)
+            }
+            val headingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                textSize = 11.5f
+                color = Color.rgb(184, 41, 33)
+            }
+            val quotePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.ITALIC)
+                textSize = 10f
+                color = Color.rgb(75, 70, 62)
+            }
+
+            val pages = lines.chunked(linesPerPage).ifEmpty { listOf(listOf("")) }
+
+            pages.forEachIndexed { pageIndex, pageLines ->
+                val pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageIndex + 1).create()
+                val page = pdfDocument.startPage(pageInfo)
+                val canvas: Canvas = page.canvas
+
+                // Paper background & left red margin line
+                canvas.drawRect(0f, 0f, pageWidth.toFloat(), pageHeight.toFloat(), paperPaint)
+                canvas.drawLine(leftMargin - 12f, 0f, leftMargin - 12f, pageHeight.toFloat(), marginRulePaint)
+
+                // Top header with manuscript title & page number
+                canvas.drawText(
+                    baseName.uppercase(),
+                    leftMargin,
+                    34f,
+                    headerPaint
+                )
+                val pageLabel = "PAGE ${pageIndex + 1} OF ${pages.size}"
+                val labelWidth = headerPaint.measureText(pageLabel)
+                canvas.drawText(
+                    pageLabel,
+                    pageWidth - leftMargin - labelWidth,
+                    34f,
+                    headerPaint
+                )
+
+                // Render up to 55 lines on this page
+                pageLines.forEachIndexed { lineIdx, rawLine ->
+                    val y = topMargin + (lineIdx + 1) * lineHeight
+                    val trimmed = rawLine.trimStart()
+                    val cleanText = stripMarkdownTokens(rawLine)
+
+                    when {
+                        trimmed.startsWith("#") -> {
+                            canvas.drawText(cleanText.removePrefix("#").trimStart(), leftMargin, y, headingPaint)
+                        }
+                        trimmed.startsWith(">") -> {
+                            canvas.drawText(cleanText.removePrefix(">").trimStart(), leftMargin + 10f, y, quotePaint)
+                        }
+                        else -> {
+                            canvas.drawText(cleanText, leftMargin, y, bodyPaint)
+                        }
+                    }
+                }
+
+                pdfDocument.finishPage(page)
+            }
+
+            context.contentResolver.openOutputStream(pdfFile.uri, "w")?.use { out ->
+                pdfDocument.writeTo(out)
+            }
+            pdfFileName
+        } catch (e: Exception) {
+            null
+        } finally {
+            pdfDocument.close()
+        }
+    }
+
+    private fun escapeHtml(text: String): String =
+        text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+
+    private fun formatInlineHtml(raw: String): String {
+        var html = escapeHtml(raw)
+        html = html.replace(Regex("\\*\\*(.+?)\\*\\*"), "<strong>$1</strong>")
+        html = html.replace(Regex("~~(.+?)~~"), "<del>$1</del>")
+        html = html.replace(Regex("(?<!\\*)\\*([^*]+)\\*(?!\\*)"), "<em>$1</em>")
+        html = html.replace(Regex("`([^`]+)`"), "<code>$1</code>")
+        return html
+    }
+
+    private fun stripMarkdownTokens(raw: String): String {
+        return raw
+            .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")
+            .replace(Regex("~~(.+?)~~"), "$1")
+            .replace(Regex("(?<!\\*)\\*([^*]+)\\*(?!\\*)"), "$1")
+            .replace(Regex("`([^`]+)`"), "$1")
+    }
 }
