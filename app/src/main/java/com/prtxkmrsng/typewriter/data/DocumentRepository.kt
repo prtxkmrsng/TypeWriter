@@ -20,12 +20,12 @@ class DocumentRepository(private val context: Context) {
         private const val KEY_FOLDER_URI = "folder_uri"
         private const val KEY_THEME = "selected_theme"
         private const val KEY_LAST_DOC_URI = "last_doc_uri"
+        private const val KEY_HARDCORE_MODE = "hardcore_mode"
     }
 
     fun getSavedFolderUri(): Uri? {
         val uriString = prefs.getString(KEY_FOLDER_URI, null) ?: return null
         val uri = Uri.parse(uriString)
-        // Verify we still hold persistable permission
         val hasPermission = context.contentResolver.persistedUriPermissions.any {
             it.uri == uri && it.isReadPermission && it.isWritePermission
         }
@@ -42,6 +42,12 @@ class DocumentRepository(private val context: Context) {
 
     fun saveThemeName(themeName: String) {
         prefs.edit().putString(KEY_THEME, themeName).apply()
+    }
+
+    fun getHardcoreMode(): Boolean = prefs.getBoolean(KEY_HARDCORE_MODE, false)
+
+    fun saveHardcoreMode(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_HARDCORE_MODE, enabled).apply()
     }
 
     fun getLastDocUri(): Uri? = prefs.getString(KEY_LAST_DOC_URI, null)?.let { Uri.parse(it) }
@@ -73,7 +79,6 @@ class DocumentRepository(private val context: Context) {
                 .ifBlank { "Untitled" }
             val fileName = if (cleanName.endsWith(".md", ignoreCase = true)) cleanName else "$cleanName.md"
 
-            // If file already exists, return it; otherwise create it
             val existing = root.findFile(fileName)
             val docFile = existing ?: root.createFile("text/markdown", fileName) ?: return@withContext null
             if (existing == null) {
