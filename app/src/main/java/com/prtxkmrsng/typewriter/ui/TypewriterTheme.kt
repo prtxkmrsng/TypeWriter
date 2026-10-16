@@ -72,15 +72,28 @@ enum class TypewriterThemeMode(
         hudBackground = Color(0xEBC92828),
         hudText = Color(0xFFFFFFFF)
     ),
+    UNDERWOOD(
+        displayName = "Underwood Envoy",
+        deskBackground = Color(0xFF1E2621),
+        paperBackground = Color(0xFFF8F5EC),
+        paperShadow = Color(0x66000000),
+        inkColor = Color(0xFF19211C),
+        accentRibbonRed = Color(0xFFB52B24),
+        hardwareBody = Color(0xFF1D3328),
+        hardwareChrome = Color(0xFFC8B07A),
+        marginLineColor = Color(0x30B52B24),
+        hudBackground = Color(0xEB182B22),
+        hudText = Color(0xFFF2EAD8)
+    ),
     TWILIGHT(
         displayName = "Twilight Torch",
         deskBackground = Color(0xFF050507),
-        paperBackground = Color(0xFFF5EBD6), // Illuminated warm paper under the torch beam
+        paperBackground = Color(0xFFF5EBD6),
         paperShadow = Color(0xCC000000),
         inkColor = Color(0xFF181410),
         accentRibbonRed = Color(0xFFA8241C),
         hardwareBody = Color(0xFF0D0D10),
-        hardwareChrome = Color(0xFF8C734B), // Warm brass hardware
+        hardwareChrome = Color(0xFF8C734B),
         marginLineColor = Color(0x33A8241C),
         hudBackground = Color(0xD90D0D10),
         hudText = Color(0xFFE6C891),
