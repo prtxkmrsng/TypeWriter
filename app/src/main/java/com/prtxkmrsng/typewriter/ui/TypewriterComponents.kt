@@ -338,9 +338,9 @@ fun TypewriterHardwareOverlay(
             ribbonPathBlack.reset()
             ribbonPathBlack.apply {
                 moveTo(leftSpoolCenter.x, leftSpoolCenter.y - spoolRadius * 0.6f)
-                quadraticBezierTo(cx - 240f, ribbonBaseY + 10f, cx - 28f, ribbonBaseY)
+                quadraticTo(cx - 240f, ribbonBaseY + 10f, cx - 28f, ribbonBaseY)
                 lineTo(cx + 28f, ribbonBaseY)
-                quadraticBezierTo(cx + 240f, ribbonBaseY + 10f, rightSpoolCenter.x, rightSpoolCenter.y - spoolRadius * 0.6f)
+                quadraticTo(cx + 240f, ribbonBaseY + 10f, rightSpoolCenter.x, rightSpoolCenter.y - spoolRadius * 0.6f)
             }
             drawPath(
                 path = ribbonPathBlack,
@@ -351,9 +351,9 @@ fun TypewriterHardwareOverlay(
             ribbonPathRed.reset()
             ribbonPathRed.apply {
                 moveTo(leftSpoolCenter.x, leftSpoolCenter.y - spoolRadius * 0.6f + 12f)
-                quadraticBezierTo(cx - 240f, ribbonBaseY + 22f, cx - 28f, ribbonBaseY + 12f)
+                quadraticTo(cx - 240f, ribbonBaseY + 22f, cx - 28f, ribbonBaseY + 12f)
                 lineTo(cx + 28f, ribbonBaseY + 12f)
-                quadraticBezierTo(cx + 240f, ribbonBaseY + 22f, rightSpoolCenter.x, rightSpoolCenter.y - spoolRadius * 0.6f + 12f)
+                quadraticTo(cx + 240f, ribbonBaseY + 22f, rightSpoolCenter.x, rightSpoolCenter.y - spoolRadius * 0.6f + 12f)
             }
             drawPath(
                 path = ribbonPathRed,
