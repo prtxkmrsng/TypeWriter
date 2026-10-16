@@ -8,6 +8,7 @@ import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -33,6 +34,11 @@ class DocumentRepository(private val context: Context) {
         private const val KEY_THEME = "selected_theme"
         private const val KEY_LAST_DOC_URI = "last_doc_uri"
         private const val KEY_HARDCORE_MODE = "hardcore_mode"
+
+        private val BOLD_REGEX = Regex("\\*\\*(.+?)\\*\\*")
+        private val STRIKE_REGEX = Regex("~~(.+?)~~")
+        private val ITALIC_REGEX = Regex("(?<!\\*)\\*([^*]+)\\*(?!\\*)")
+        private val CODE_REGEX = Regex("`([^`]+)`")
     }
 
     fun getSavedFolderUri(): Uri? {
@@ -104,6 +110,26 @@ class DocumentRepository(private val context: Context) {
             )
         }
 
+    suspend fun deleteDocument(fileUri: Uri): Boolean = withContext(Dispatchers.IO) {
+        try {
+            DocumentFile.fromSingleUri(context, fileUri)?.delete() == true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    suspend fun renameDocument(fileUri: Uri, rawNewTitle: String): Uri? = withContext(Dispatchers.IO) {
+        try {
+            val cleanName = rawNewTitle.trim()
+                .replace(Regex("[^a-zA-Z0-9._ -]"), "")
+                .ifBlank { return@withContext null }
+            val fileName = if (cleanName.endsWith(".md", ignoreCase = true)) cleanName else "$cleanName.md"
+            DocumentsContract.renameDocument(context.contentResolver, fileUri, fileName)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     suspend fun readDocumentContent(fileUri: Uri): String = withContext(Dispatchers.IO) {
         try {
             context.contentResolver.openInputStream(fileUri)?.bufferedReader()?.use { it.readText() } ?: ""
@@ -124,9 +150,6 @@ class DocumentRepository(private val context: Context) {
             }
         }
 
-    /**
-     * Exports the current manuscript as a styled, self-contained HTML file with 55-line page breaks.
-     */
     suspend fun exportToHtml(
         folderUri: Uri,
         documentName: String,
@@ -186,6 +209,12 @@ class DocumentRepository(private val context: Context) {
                         margin: 8px 0 4px 0;
                         font-weight: bold;
                     }
+                    hr.typewriter-rule {
+                        border: none;
+                        border-top: 2px dashed #B82921;
+                        margin: 12px 0;
+                        opacity: 0.5;
+                    }
                     blockquote {
                         margin: 0;
                         padding-left: 12px;
@@ -219,6 +248,8 @@ class DocumentRepository(private val context: Context) {
                     pageLines.forEach { rawLine ->
                         val trimmed = rawLine.trimStart()
                         when {
+                            trimmed == "---" || trimmed == "***" ->
+                                appendLine("<hr class=\"typewriter-rule\" />")
                             trimmed.startsWith("### ") ->
                                 appendLine("<h3>${formatInlineHtml(trimmed.removePrefix("### "))}</h3>")
                             trimmed.startsWith("## ") ->
@@ -251,10 +282,6 @@ class DocumentRepository(private val context: Context) {
         }
     }
 
-    /**
-     * Exports the current manuscript as a paginated PDF (55 lines per page) with subtle mechanical
-     * ink-pressure variation per character.
-     */
     suspend fun exportToPdf(
         folderUri: Uri,
         documentName: String,
@@ -328,18 +355,26 @@ class DocumentRepository(private val context: Context) {
                     val cleanText = stripMarkdownTokens(rawLine)
 
                     when {
+                        trimmed == "---" || trimmed == "***" -> {
+                            canvas.drawLine(
+                                leftMargin,
+                                y - 4f,
+                                pageWidth - leftMargin,
+                                y - 4f,
+                                marginRulePaint
+                            )
+                        }
                         trimmed.startsWith("#") -> {
-                            canvas.drawText(cleanText.removePrefix("#").trimStart(), leftMargin, y, headingPaint)
+                            canvas.drawText(cleanText.trimStart('#', ' '), leftMargin, y, headingPaint)
                         }
                         trimmed.startsWith(">") -> {
                             canvas.drawText(cleanText.removePrefix(">").trimStart(), leftMargin + 10f, y, quotePaint)
                         }
                         else -> {
-                            // Draw character by character with subtle mechanical ink-pressure alpha & micro-jitter
                             cleanText.forEachIndexed { colIdx, ch ->
                                 if (ch != ' ') {
                                     val hash = abs(globalLineIdx * 131 + colIdx * 37 + ch.code * 17)
-                                    val alpha = 195 + (hash % 61) // 195..255 ink pressure
+                                    val alpha = 195 + (hash % 61)
                                     val yJitter = ((hash % 5) - 2) * 0.14f
                                     bodyPaint.alpha = alpha
                                     canvas.drawText(
@@ -354,6 +389,11 @@ class DocumentRepository(private val context: Context) {
                         }
                     }
                 }
+
+                // Footer credit
+                val footerSig = "TYPED ON TYPEWRITER • @prtxkmrsng"
+                val sigWidth = headerPaint.measureText(footerSig)
+                canvas.drawText(footerSig, pageWidth - leftMargin - sigWidth, pageHeight - 24f, headerPaint)
 
                 pdfDocument.finishPage(page)
             }
@@ -380,18 +420,18 @@ class DocumentRepository(private val context: Context) {
 
     private fun formatInlineHtml(raw: String): String {
         var html = escapeHtml(raw)
-        html = html.replace(Regex("\\*\\*(.+?)\\*\\*"), "<strong>$1</strong>")
-        html = html.replace(Regex("~~(.+?)~~"), "<del>$1</del>")
-        html = html.replace(Regex("(?<!\\*)\\*([^*]+)\\*(?!\\*)"), "<em>$1</em>")
-        html = html.replace(Regex("`([^`]+)`"), "<code>$1</code>")
+        html = html.replace(BOLD_REGEX, "<strong>$1</strong>")
+        html = html.replace(STRIKE_REGEX, "<del>$1</del>")
+        html = html.replace(ITALIC_REGEX, "<em>$1</em>")
+        html = html.replace(CODE_REGEX, "<code>$1</code>")
         return html
     }
 
     private fun stripMarkdownTokens(raw: String): String {
         return raw
-            .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")
-            .replace(Regex("~~(.+?)~~"), "$1")
-            .replace(Regex("(?<!\\*)\\*([^*]+)\\*(?!\\*)"), "$1")
-            .replace(Regex("`([^`]+)`"), "$1")
+            .replace(BOLD_REGEX, "$1")
+            .replace(STRIKE_REGEX, "$1")
+            .replace(ITALIC_REGEX, "$1")
+            .replace(CODE_REGEX, "$1")
     }
 }
