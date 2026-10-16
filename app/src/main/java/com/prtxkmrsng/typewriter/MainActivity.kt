@@ -5,10 +5,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import com.prtxkmrsng.typewriter.ui.TypewriterScreen
-import com.prtxkmrsng.typewriter.ui.TypewriterTheme
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import com.prtxkmrsng.typewriter.ui.TypewriterRootScreen
 import com.prtxkmrsng.typewriter.ui.TypewriterViewModel
 
 class MainActivity : ComponentActivity() {
@@ -18,14 +18,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // Immersive mode for tablet distraction-free writing
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.systemBars())
+        }
+
         setContent {
-            TypewriterTheme {
-                val uiState by viewModel.uiState.collectAsState()
-                TypewriterScreen(
-                    viewModel = viewModel,
-                    uiState = uiState
-                )
-            }
+            TypewriterRootScreen(viewModel = viewModel)
         }
     }
 }
