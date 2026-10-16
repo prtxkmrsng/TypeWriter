@@ -15,8 +15,10 @@ import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -27,15 +29,19 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -145,7 +151,6 @@ private fun TypewriterWorkspace(
     var isDrawerOpen by remember { mutableStateOf(false) }
     var showNewDocDialog by remember { mutableStateOf(false) }
 
-    // Measure exact monospace character width & line height
     val textMeasurer = rememberTextMeasurer()
     val density = LocalDensity.current
     val charSampleLayout = remember(density) {
@@ -160,15 +165,15 @@ private fun TypewriterWorkspace(
     val paperTopPaddingPx = with(density) { 72.dp.toPx() }
     val paperWidthPx = (state.maxCharsPerLine * charWidthPx) + (paperHorizontalPaddingPx * 2f)
 
-    // Typehead is fixed in the horizontal center and 1/3rd from the bottom (y = 2/3 of screen height)
+    // Moved down to 76% of screen height (approx 1/4 from bottom) so more paper is visible
+    // and the lower deck houses the rotating ribbon spools & mechanical switches.
     val typeheadCenter = remember(viewportSize) {
         Offset(
             x = viewportSize.width / 2f,
-            y = viewportSize.height * (2f / 3f)
+            y = viewportSize.height * 0.76f
         )
     }
 
-    // Calculate paper carriage translation so (cursorCol, cursorLine) sits right at typeheadCenter
     val targetPaperLeftX = typeheadCenter.x - paperHorizontalPaddingPx - (state.cursorCol * charWidthPx)
     val targetPaperTopY = typeheadCenter.y - paperTopPaddingPx - (state.cursorLine * lineHeightPx) - (lineHeightPx * 0.78f)
 
@@ -190,8 +195,8 @@ private fun TypewriterWorkspace(
         label = "PlatenRollY"
     )
 
-    LaunchedEffect(Unit, isDrawerOpen, showNewDocDialog) {
-        if (!isDrawerOpen && !showNewDocDialog) {
+    LaunchedEffect(Unit, isDrawerOpen, showNewDocDialog, state.isPreviewMode) {
+        if (!isDrawerOpen && !showNewDocDialog && !state.isPreviewMode) {
             focusRequester.requestFocus()
         }
     }
@@ -205,6 +210,11 @@ private fun TypewriterWorkspace(
             .focusable()
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+
+                if (event.key == Key.Escape && state.isPreviewMode) {
+                    viewModel.togglePreviewMode()
+                    return@onPreviewKeyEvent true
+                }
 
                 when (event.key) {
                     Key.Enter, Key.NumPadEnter -> {
@@ -246,7 +256,6 @@ private fun TypewriterWorkspace(
                     }
                 }
             }
-            // Allow manual platen rolling by dragging vertically on the tablet screen
             .pointerInput(Unit) {
                 var accumulatedDrag = 0f
                 detectVerticalDragGestures { _, dragAmount ->
@@ -268,7 +277,7 @@ private fun TypewriterWorkspace(
             }
     ) {
         // 1. THE MOVING PAPER SHEET ON THE CARRIAGE
-        val paperMinHeightPx = ((state.lines.size + 12) * lineHeightPx) + paperTopPaddingPx * 2f
+        val paperMinHeightPx = ((state.lines.size + 14) * lineHeightPx) + paperTopPaddingPx * 2f
         val paperWidthDp = with(density) { paperWidthPx.toDp() }
         val paperHeightDp = with(density) { paperMinHeightPx.toDp() }
 
@@ -282,15 +291,12 @@ private fun TypewriterWorkspace(
                 }
                 .size(width = paperWidthDp, height = paperHeightDp)
         ) {
-            // Paper drop shadow + ruled margin lines + perforated page edges
             Canvas(modifier = Modifier.fillMaxSize()) {
-                // Drop shadow on desk
                 drawRect(
                     color = theme.paperShadow,
                     topLeft = Offset(14f, 18f),
                     size = size
                 )
-                // Main paper sheet
                 drawRect(
                     color = theme.paperBackground,
                     size = size
@@ -312,7 +318,8 @@ private fun TypewriterWorkspace(
                 )
             }
 
-            // Typed Markdown lines rendered on the moving sheet
+            // Typed Markdown lines + Hardcore Overstrike layer rendered on the moving sheet
+            val activeInk = if (state.isRedRibbon) theme.accentRibbonRed else theme.inkColor
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -322,33 +329,64 @@ private fun TypewriterWorkspace(
                         end = with(density) { paperHorizontalPaddingPx.toDp() }
                     )
             ) {
-                val activeInk = if (state.isRedRibbon) theme.accentRibbonRed else theme.inkColor
-                state.lines.forEachIndexed { index, lineText ->
-                    val isHeading = lineText.trimStart().startsWith("#")
-                    Text(
-                        text = lineText,
-                        style = TypewriterTypography.bodyMonospace.copy(
-                            color = if (isHeading) theme.accentRibbonRed else activeInk,
-                            fontWeight = if (isHeading) FontWeight.Bold else FontWeight.Medium
-                        ),
-                        maxLines = 1,
-                        softWrap = false,
-                        modifier = Modifier.height(with(density) { lineHeightPx.toDp() })
-                    )
+                state.lines.forEachIndexed { lineIdx, lineText ->
+                    Box(modifier = Modifier.height(with(density) { lineHeightPx.toDp() })) {
+                        // Primary Inline-Styled Markdown Text
+                        val styledLine = remember(lineText, activeInk, theme.accentRibbonRed) {
+                            formatMonospaceMarkdownLine(
+                                line = lineText,
+                                baseInkColor = activeInk,
+                                accentRedColor = theme.accentRibbonRed
+                            )
+                        }
+                        Text(
+                            text = styledLine,
+                            style = TypewriterTypography.bodyMonospace,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+
+                        // Render any physical Hardcore Mode overstruck characters on this line
+                        state.overstruckCells.forEach { (cell, oldChars) ->
+                            if (cell.first == lineIdx) {
+                                val colOffsetDp = with(density) { (cell.second * charWidthPx).toDp() }
+                                oldChars.forEachIndexed { strikeIdx, oldChar ->
+                                    Text(
+                                        text = oldChar.toString(),
+                                        style = TypewriterTypography.bodyMonospace.copy(
+                                            color = theme.inkColor.copy(alpha = 0.72f)
+                                        ),
+                                        modifier = Modifier.offset(
+                                            x = colOffsetDp,
+                                            y = if (strikeIdx % 2 == 0) (-0.5).dp else 0.5.dp
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        // 2. FIXED TYPEHEAD, RIBBON & LOWER TYPEBASKET (1/3rd from bottom)
+        // 2. FIXED TYPEHEAD, RIBBON, ROTATING SPOOLS & MECHANICAL DECK (at 76% height)
         TypewriterHardwareOverlay(
             typeheadCenter = typeheadCenter,
             theme = theme,
             isRedRibbon = state.isRedRibbon,
-            strikeTriggerId = state.strikeTriggerId
+            isHardcoreMode = state.isHardcoreMode,
+            strikeTriggerId = state.strikeTriggerId,
+            ribbonSpoolAngle = state.ribbonSpoolAngle,
+            cursorLine = state.cursorLine,
+            cursorCol = state.cursorCol,
+            charCount = state.charCount,
+            onToggleRibbon = viewModel::toggleRibbonColor,
+            onToggleHardcore = viewModel::toggleHardcoreMode,
+            onCarriageReturn = viewModel::onEnterPressed
         )
 
         // 3. TWILIGHT MODE FLICKERING TORCH OVERLAY
-        if (theme.isTwilight) {
+        if (theme.isTwilight && !state.isPreviewMode) {
             TwilightTorchOverlay(typeheadCenter = typeheadCenter)
         }
 
@@ -357,13 +395,25 @@ private fun TypewriterWorkspace(
             state = state,
             onToggleDrawer = { isDrawerOpen = !isDrawerOpen },
             onNewDocument = { showNewDocDialog = true },
-            onToggleRibbon = viewModel::toggleRibbonColor,
+            onToggleHardcore = viewModel::toggleHardcoreMode,
+            onTogglePreview = viewModel::togglePreviewMode,
             onToggleMute = viewModel::toggleMute,
             onSelectTheme = viewModel::setTheme,
             modifier = Modifier.align(Alignment.TopCenter)
         )
 
-        // 5. SLIDE-OUT MANUSCRIPT DRAWER
+        // 5. READ / PREVIEW MANUSCRIPT MODAL SHEET
+        AnimatedVisibility(
+            visible = state.isPreviewMode,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            ManuscriptPreviewModal(
+                state = state,
+                onClose = viewModel::togglePreviewMode
+            )
+        }
+
+        // 6. SLIDE-OUT MANUSCRIPT DRAWER
         AnimatedVisibility(
             visible = isDrawerOpen,
             modifier = Modifier.align(Alignment.CenterStart)
@@ -400,7 +450,8 @@ private fun TopTypewriterHud(
     state: TypewriterUiState,
     onToggleDrawer: () -> Unit,
     onNewDocument: () -> Unit,
-    onToggleRibbon: () -> Unit,
+    onToggleHardcore: () -> Unit,
+    onTogglePreview: () -> Unit,
     onToggleMute: () -> Unit,
     onSelectTheme: (TypewriterThemeMode) -> Unit,
     modifier: Modifier = Modifier
@@ -411,7 +462,7 @@ private fun TopTypewriterHud(
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 14.dp),
+            .padding(horizontal = 20.dp, vertical = 12.dp),
         color = theme.hudBackground,
         contentColor = theme.hudText,
         shape = RoundedCornerShape(10.dp),
@@ -420,11 +471,10 @@ private fun TopTypewriterHud(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            // Left: Drawer + Document Name + Autosave badge
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onToggleDrawer) {
                     Icon(Icons.Default.MenuBook, contentDescription = "Manuscripts")
@@ -450,31 +500,52 @@ private fun TopTypewriterHud(
                 }
             }
 
-            // Right: Ribbon Selector (Black/Red), Sound Toggle, Theme & Twilight Selector, New File
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Black / Red Ribbon Selector Lever
-                OutlinedButton(
-                    onClick = onToggleRibbon,
-                    border = ButtonDefaults.outlinedButtonBorder(enabled = true),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .clip(CircleShape)
-                            .background(if (state.isRedRibbon) theme.accentRibbonRed else Color.White)
+                // Hardcore Overstrike Mode Chip
+                FilterChip(
+                    selected = state.isHardcoreMode,
+                    onClick = onToggleHardcore,
+                    label = {
+                        Text(
+                            text = if (state.isHardcoreMode) "HARDCORE: ON" else "HARDCORE: OFF",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp
+                        )
+                    },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = Color(0xFFB85D19),
+                        selectedLabelColor = Color.White,
+                        labelColor = theme.hudText
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = if (state.isRedRibbon) "RED INK" else "BLACK INK",
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp,
-                        color = theme.hudText
+                )
+
+                // Read / Preview Manuscript Mode Chip
+                FilterChip(
+                    selected = state.isPreviewMode,
+                    onClick = onTogglePreview,
+                    label = {
+                        Text(
+                            text = if (state.isPreviewMode) "CLOSE PREVIEW" else "PREVIEW .MD",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Visibility,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp)
+                        )
+                    },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = theme.accentRibbonRed,
+                        selectedLabelColor = Color.White,
+                        labelColor = theme.hudText
                     )
-                }
+                )
 
                 // Quick Twilight Torch toggle button
                 FilterChip(
@@ -488,16 +559,16 @@ private fun TopTypewriterHud(
                     },
                     label = {
                         Text(
-                            text = "TWILIGHT TORCH",
+                            text = "TWILIGHT",
                             fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp
+                            fontSize = 11.sp
                         )
                     },
                     leadingIcon = {
                         Icon(
                             imageVector = Icons.Default.FlashlightOn,
                             contentDescription = null,
-                            modifier = Modifier.size(16.dp)
+                            modifier = Modifier.size(15.dp)
                         )
                     },
                     colors = FilterChipDefaults.filterChipColors(
@@ -507,7 +578,6 @@ private fun TopTypewriterHud(
                     )
                 )
 
-                // Theme Picker Dropdown
                 Box {
                     IconButton(onClick = { showThemeMenu = true }) {
                         Icon(Icons.Default.Palette, contentDescription = "Themes")
@@ -534,7 +604,6 @@ private fun TopTypewriterHud(
                     }
                 }
 
-                // Mute / Unmute Mechanical Audio
                 IconButton(onClick = onToggleMute) {
                     Icon(
                         imageVector = if (state.isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
@@ -542,10 +611,204 @@ private fun TopTypewriterHud(
                     )
                 }
 
-                // New Markdown Sheet
                 IconButton(onClick = onNewDocument) {
                     Icon(Icons.Default.NoteAdd, contentDescription = "New Manuscript")
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Full-page typeset Markdown reader modal that strips raw Markdown tokens and displays
+ * clean formatted manuscript pages.
+ */
+@Composable
+private fun ManuscriptPreviewModal(
+    state: TypewriterUiState,
+    onClose: () -> Unit
+) {
+    val theme = state.themeMode
+    val scrollState = rememberScrollState()
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.80f))
+            .padding(top = 78.dp, bottom = 24.dp),
+        contentAlignment = Alignment.TopCenter
+    ) {
+        Surface(
+            modifier = Modifier
+                .widthIn(max = 820.dp)
+                .fillMaxHeight()
+                .padding(horizontal = 24.dp),
+            color = theme.paperBackground,
+            contentColor = theme.inkColor,
+            shape = RoundedCornerShape(8.dp),
+            tonalElevation = 16.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(scrollState)
+                    .padding(horizontal = 64.dp, vertical = 48.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "MANUSCRIPT PROOF • ${state.activeDocument?.name ?: "Untitled.md"}",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                        color = theme.inkColor.copy(alpha = 0.55f)
+                    )
+                    TextButton(onClick = onClose) {
+                        Text(
+                            text = "RETURN TO TYPEWRITER [ESC]",
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            color = theme.accentRibbonRed
+                        )
+                    }
+                }
+
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 16.dp),
+                    color = theme.inkColor.copy(alpha = 0.2f)
+                )
+
+                state.lines.forEach { rawLine ->
+                    val trimmed = rawLine.trim()
+                    when {
+                        trimmed.startsWith("### ") -> {
+                            Text(
+                                text = trimmed.removePrefix("### "),
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 20.sp,
+                                color = theme.accentRibbonRed,
+                                modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
+                            )
+                        }
+                        trimmed.startsWith("## ") -> {
+                            Text(
+                                text = trimmed.removePrefix("## "),
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 24.sp,
+                                color = theme.accentRibbonRed,
+                                modifier = Modifier.padding(top = 16.dp, bottom = 6.dp)
+                            )
+                        }
+                        trimmed.startsWith("# ") -> {
+                            Text(
+                                text = trimmed.removePrefix("# "),
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 28.sp,
+                                color = theme.accentRibbonRed,
+                                modifier = Modifier.padding(top = 18.dp, bottom = 8.dp)
+                            )
+                        }
+                        trimmed.startsWith("> ") -> {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .width(3.dp)
+                                        .height(26.dp)
+                                        .background(theme.accentRibbonRed)
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    text = parseCleanMarkdownInline(trimmed.removePrefix("> "), theme.inkColor, theme.accentRibbonRed),
+                                    fontFamily = FontFamily.Monospace,
+                                    fontStyle = FontStyle.Italic,
+                                    fontSize = 18.sp,
+                                    lineHeight = 28.sp
+                                )
+                            }
+                        }
+                        else -> {
+                            Text(
+                                text = parseCleanMarkdownInline(rawLine, theme.inkColor, theme.accentRibbonRed),
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 18.sp,
+                                lineHeight = 30.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun parseCleanMarkdownInline(
+    raw: String,
+    inkColor: Color,
+    accentRed: Color
+) = buildAnnotatedString {
+    var i = 0
+    while (i < raw.length) {
+        when {
+            raw.startsWith("**", i) -> {
+                val end = raw.indexOf("**", i + 2)
+                if (end != -1) {
+                    withStyle(SpanStyle(fontWeight = FontWeight.ExtraBold, color = inkColor)) {
+                        append(raw.substring(i + 2, end))
+                    }
+                    i = end + 2
+                } else {
+                    append(raw[i])
+                    i++
+                }
+            }
+            raw.startsWith("~~", i) -> {
+                val end = raw.indexOf("~~", i + 2)
+                if (end != -1) {
+                    withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough, color = inkColor.copy(alpha = 0.6f))) {
+                        append(raw.substring(i + 2, end))
+                    }
+                    i = end + 2
+                } else {
+                    append(raw[i])
+                    i++
+                }
+            }
+            raw.startsWith("*", i) -> {
+                val end = raw.indexOf("*", i + 1)
+                if (end != -1) {
+                    withStyle(SpanStyle(fontStyle = FontStyle.Italic, color = inkColor)) {
+                        append(raw.substring(i + 1, end))
+                    }
+                    i = end + 1
+                } else {
+                    append(raw[i])
+                    i++
+                }
+            }
+            raw.startsWith("`", i) -> {
+                val end = raw.indexOf("`", i + 1)
+                if (end != -1) {
+                    withStyle(SpanStyle(background = inkColor.copy(alpha = 0.12f), color = accentRed, fontWeight = FontWeight.SemiBold)) {
+                        append(raw.substring(i + 1, end))
+                    }
+                    i = end + 1
+                } else {
+                    append(raw[i])
+                    i++
+                }
+            }
+            else -> {
+                append(raw[i])
+                i++
             }
         }
     }
