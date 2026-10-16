@@ -5,43 +5,150 @@ import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameMillis
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.BlendMode
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.random.Random
 
 /**
- * Renders the Typewriter Ribbon, Card Guide, Platen Roller Bar, and striking Typehead
- * anchored at [typeheadCenter] (x = 50% width, y = 67% height, i.e., 1/3 from bottom).
+ * Formats a single line of Markdown for the typewriter page while strictly preserving
+ * 1:1 monospace character column positions (syntax characters are dimmed rather than removed).
+ */
+fun formatMonospaceMarkdownLine(
+    line: String,
+    baseInkColor: Color,
+    accentRedColor: Color
+): AnnotatedString = buildAnnotatedString {
+    append(line)
+    val trimmed = line.trimStart()
+
+    // 1. Headings (#, ##, ###)
+    if (trimmed.startsWith("#")) {
+        addStyle(
+            SpanStyle(
+                color = accentRedColor,
+                fontWeight = FontWeight.ExtraBold
+            ),
+            start = 0,
+            end = line.length
+        )
+        return@buildAnnotatedString
+    }
+
+    // 2. Blockquotes (>)
+    if (trimmed.startsWith(">")) {
+        addStyle(
+            SpanStyle(
+                color = baseInkColor.copy(alpha = 0.78f),
+                fontStyle = FontStyle.Italic
+            ),
+            start = 0,
+            end = line.length
+        )
+    }
+
+    val fadedSyntax = SpanStyle(color = baseInkColor.copy(alpha = 0.35f))
+
+    // 3. Bold (**text**)
+    Regex("\\*\\*(.+?)\\*\\*").findAll(line).forEach { match ->
+        val range = match.range
+        addStyle(fadedSyntax, range.first, range.first + 2)
+        addStyle(
+            SpanStyle(fontWeight = FontWeight.ExtraBold, color = baseInkColor),
+            range.first + 2,
+            range.last - 1
+        )
+        addStyle(fadedSyntax, range.last - 1, range.last + 1)
+    }
+
+    // 4. Italic (*text* or _text_)
+    Regex("(?<!\\*)\\*([^*]+)\\*(?!\\*)|_([^_]+)_").findAll(line).forEach { match ->
+        val range = match.range
+        addStyle(fadedSyntax, range.first, range.first + 1)
+        addStyle(
+            SpanStyle(fontStyle = FontStyle.Italic, color = baseInkColor),
+            range.first + 1,
+            range.last
+        )
+        addStyle(fadedSyntax, range.last, range.last + 1)
+    }
+
+    // 5. Strikethrough (~~text~~)
+    Regex("~~(.+?)~~").findAll(line).forEach { match ->
+        val range = match.range
+        addStyle(fadedSyntax, range.first, range.first + 2)
+        addStyle(
+            SpanStyle(textDecoration = TextDecoration.LineThrough, color = baseInkColor.copy(alpha = 0.65f)),
+            range.first + 2,
+            range.last - 1
+        )
+        addStyle(fadedSyntax, range.last - 1, range.last + 1)
+    }
+
+    // 6. Inline Code (`code`)
+    Regex("`([^`]+)`").findAll(line).forEach { match ->
+        val range = match.range
+        addStyle(fadedSyntax, range.first, range.first + 1)
+        addStyle(
+            SpanStyle(
+                background = baseInkColor.copy(alpha = 0.10f),
+                color = accentRedColor,
+                fontWeight = FontWeight.SemiBold
+            ),
+            range.first + 1,
+            range.last
+        )
+        addStyle(fadedSyntax, range.last, range.last + 1)
+    }
+}
+
+/**
+ * Renders the Typewriter Ribbon, Card Guide, Platen Roller Bar, striking Typehead,
+ * Rotating Left/Right Ink Spools, and Interactive Mechanical Deck below the ribbon.
  */
 @Composable
 fun TypewriterHardwareOverlay(
     typeheadCenter: Offset,
     theme: TypewriterThemeMode,
     isRedRibbon: Boolean,
+    isHardcoreMode: Boolean,
     strikeTriggerId: Long,
+    ribbonSpoolAngle: Float,
+    cursorLine: Int,
+    cursorCol: Int,
+    charCount: Int,
+    onToggleRibbon: () -> Unit,
+    onToggleHardcore: () -> Unit,
+    onCarriageReturn: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // 0f = resting, 1f = striking the paper at the typehead
     val strikeProgress = remember { Animatable(0f) }
 
     LaunchedEffect(strikeTriggerId) {
@@ -49,189 +156,404 @@ fun TypewriterHardwareOverlay(
             strikeProgress.snapTo(0f)
             strikeProgress.animateTo(
                 targetValue = 1f,
-                animationSpec = tween(durationMillis = 28, easing = FastOutLinearInEasing)
+                animationSpec = tween(durationMillis = 26, easing = FastOutLinearInEasing)
             )
             strikeProgress.animateTo(
                 targetValue = 0f,
-                animationSpec = tween(durationMillis = 55, easing = LinearOutSlowInEasing)
+                animationSpec = tween(durationMillis = 52, easing = LinearOutSlowInEasing)
             )
         }
     }
 
-    Canvas(modifier = modifier.fillMaxSize()) {
-        val cx = typeheadCenter.x
-        val cy = typeheadCenter.y
-        val liftOffset = strikeProgress.value * 14f
+    Box(modifier = modifier.fillMaxSize()) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val cx = typeheadCenter.x
+            val cy = typeheadCenter.y
+            val liftOffset = strikeProgress.value * 14f
 
-        // 1. Horizontal Paper Bail / Platen Pressure Bar with Inch Scale
-        val bailY = cy - 54f
-        drawRect(
-            color = theme.hardwareChrome.copy(alpha = 0.85f),
-            topLeft = Offset(0f, bailY),
-            size = Size(size.width, 8f)
-        )
-        drawRect(
-            color = Color.Black.copy(alpha = 0.35f),
-            topLeft = Offset(0f, bailY + 8f),
-            size = Size(size.width, 4f)
-        )
-        // Ruler tick marks along the bail bar
-        val tickStep = 24f
-        var tickX = cx % tickStep
-        while (tickX < size.width) {
-            val isMajor = (((tickX - cx) / tickStep).toInt() % 5 == 0)
-            drawLine(
-                color = theme.hardwareBody,
-                start = Offset(tickX, bailY),
-                end = Offset(tickX, bailY + if (isMajor) 7f else 4f),
-                strokeWidth = if (isMajor) 2f else 1f
+            // 1. Horizontal Paper Bail / Platen Pressure Bar with Inch Scale
+            val bailY = cy - 52f
+            drawRect(
+                color = theme.hardwareChrome.copy(alpha = 0.85f),
+                topLeft = Offset(0f, bailY),
+                size = Size(size.width, 8f)
             )
-            tickX += tickStep
-        }
+            drawRect(
+                color = Color.Black.copy(alpha = 0.35f),
+                topLeft = Offset(0f, bailY + 8f),
+                size = Size(size.width, 4f)
+            )
+            val tickStep = 24f
+            var tickX = cx % tickStep
+            while (tickX < size.width) {
+                val isMajor = (((tickX - cx) / tickStep).toInt() % 5 == 0)
+                drawLine(
+                    color = theme.hardwareBody,
+                    start = Offset(tickX, bailY),
+                    end = Offset(tickX, bailY + if (isMajor) 7f else 4f),
+                    strokeWidth = if (isMajor) 2f else 1f
+                )
+                tickX += tickStep
+            }
 
-        // 2. Ink Ribbon stretching from left spool to right spool behind the typehead
-        val ribbonBaseY = cy + 20f - liftOffset
-        val ribbonPathBlack = Path().apply {
-            moveTo(0f, cy + 95f)
-            quadraticBezierTo(cx - 260f, ribbonBaseY + 12f, cx - 28f, ribbonBaseY)
-            lineTo(cx + 28f, ribbonBaseY)
-            quadraticBezierTo(cx + 260f, ribbonBaseY + 12f, size.width, cy + 95f)
-        }
-        drawPath(
-            path = ribbonPathBlack,
-            color = Color(0xFF19191D),
-            style = Stroke(width = 18f, cap = StrokeCap.Butt)
-        )
-
-        val ribbonPathRed = Path().apply {
-            moveTo(0f, cy + 109f)
-            quadraticBezierTo(cx - 260f, ribbonBaseY + 26f, cx - 28f, ribbonBaseY + 14f)
-            lineTo(cx + 28f, ribbonBaseY + 14f)
-            quadraticBezierTo(cx + 260f, ribbonBaseY + 26f, size.width, cy + 109f)
-        }
-        drawPath(
-            path = ribbonPathRed,
-            color = theme.accentRibbonRed,
-            style = Stroke(width = 12f, cap = StrokeCap.Butt)
-        )
-
-        // 3. Metallic Type Guide & Ribbon Vibrator Forks around the active character
-        // Left fork
-        drawRoundRect(
-            color = theme.hardwareChrome,
-            topLeft = Offset(cx - 32f, cy - 18f - liftOffset * 0.4f),
-            size = Size(10f, 56f),
-            cornerRadius = CornerRadius(3f, 3f)
-        )
-        // Right fork
-        drawRoundRect(
-            color = theme.hardwareChrome,
-            topLeft = Offset(cx + 22f, cy - 18f - liftOffset * 0.4f),
-            size = Size(10f, 56f),
-            cornerRadius = CornerRadius(3f, 3f)
-        )
-        // Red V-notch alignment indicator right below the active strike point
-        drawLine(
-            color = if (isRedRibbon) theme.accentRibbonRed else theme.hardwareChrome,
-            start = Offset(cx - 10f, cy + 16f),
-            end = Offset(cx, cy + 6f),
-            strokeWidth = 2.5f
-        )
-        drawLine(
-            color = if (isRedRibbon) theme.accentRibbonRed else theme.hardwareChrome,
-            start = Offset(cx + 10f, cy + 16f),
-            end = Offset(cx, cy + 6f),
-            strokeWidth = 2.5f
-        )
-
-        // 4. Lower Typewriter Body / Typebasket Housing (below the typehead)
-        val bodyTopY = cy + 88f
-        drawRect(
-            brush = Brush.verticalGradient(
-                colors = listOf(
-                    theme.hardwareBody.copy(alpha = 0.96f),
-                    Color(0xFF090A0C)
+            // 2. Lower Typewriter Body / Mechanical Deck Housing (starts right below the ribbon)
+            val bodyTopY = cy + 62f
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        theme.hardwareBody,
+                        Color(0xFF0B0C0E)
+                    ),
+                    startY = bodyTopY,
+                    endY = size.height
                 ),
-                startY = bodyTopY,
-                endY = size.height
-            ),
-            topLeft = Offset(0f, bodyTopY),
-            size = Size(size.width, size.height - bodyTopY)
-        )
+                topLeft = Offset(0f, bodyTopY),
+                size = Size(size.width, size.height - bodyTopY)
+            )
 
-        // Chrome trim along the top edge of the lower housing
-        drawLine(
-            color = theme.hardwareChrome.copy(alpha = 0.7f),
-            start = Offset(0f, bodyTopY),
-            end = Offset(size.width, bodyTopY),
-            strokeWidth = 4f
-        )
-
-        // Semi-circular Typebar Basket Comb
-        drawArc(
-            color = Color(0xFF111215),
-            startAngle = 180f,
-            sweepAngle = 180f,
-            useCenter = true,
-            topLeft = Offset(cx - 240f, cy + 25f),
-            size = Size(480f, 220f)
-        )
-        drawArc(
-            color = theme.hardwareChrome.copy(alpha = 0.5f),
-            startAngle = 180f,
-            sweepAngle = 180f,
-            useCenter = false,
-            topLeft = Offset(cx - 240f, cy + 25f),
-            size = Size(480f, 220f),
-            style = Stroke(width = 4f)
-        )
-
-        // Fan of resting typebars in the basket
-        for (angleIndex in -9..9) {
-            val fanX = cx + angleIndex * 22f
+            // Brushed chrome bevel along the top edge of the lower deck
             drawLine(
-                color = theme.hardwareChrome.copy(alpha = 0.28f),
-                start = Offset(fanX, cy + 135f),
-                end = Offset(cx + angleIndex * 6f, cy + 60f),
-                strokeWidth = 3f,
+                color = theme.hardwareChrome.copy(alpha = 0.78f),
+                start = Offset(0f, bodyTopY),
+                end = Offset(size.width, bodyTopY),
+                strokeWidth = 4f
+            )
+
+            val leftSpoolCenter = Offset(size.width * 0.16f, bodyTopY + (size.height - bodyTopY) * 0.48f)
+            val rightSpoolCenter = Offset(size.width * 0.84f, bodyTopY + (size.height - bodyTopY) * 0.48f)
+            val spoolRadius = ((size.height - bodyTopY) * 0.36f).coerceIn(44f, 78f)
+
+            // 3. Bichrome Ink Ribbon feeding from Left Spool -> Typehead Vibrator -> Right Spool
+            val ribbonBaseY = cy + 16f - liftOffset
+            val ribbonPathBlack = Path().apply {
+                moveTo(leftSpoolCenter.x, leftSpoolCenter.y - spoolRadius * 0.6f)
+                quadraticBezierTo(cx - 240f, ribbonBaseY + 10f, cx - 28f, ribbonBaseY)
+                lineTo(cx + 28f, ribbonBaseY)
+                quadraticBezierTo(cx + 240f, ribbonBaseY + 10f, rightSpoolCenter.x, rightSpoolCenter.y - spoolRadius * 0.6f)
+            }
+            drawPath(
+                path = ribbonPathBlack,
+                color = Color(0xFF19191D),
+                style = Stroke(width = 16f, cap = StrokeCap.Round)
+            )
+
+            val ribbonPathRed = Path().apply {
+                moveTo(leftSpoolCenter.x, leftSpoolCenter.y - spoolRadius * 0.6f + 12f)
+                quadraticBezierTo(cx - 240f, ribbonBaseY + 22f, cx - 28f, ribbonBaseY + 12f)
+                lineTo(cx + 28f, ribbonBaseY + 12f)
+                quadraticBezierTo(cx + 240f, ribbonBaseY + 22f, rightSpoolCenter.x, rightSpoolCenter.y - spoolRadius * 0.6f + 12f)
+            }
+            drawPath(
+                path = ribbonPathRed,
+                color = theme.accentRibbonRed,
+                style = Stroke(width = 11f, cap = StrokeCap.Round)
+            )
+
+            // 4. Left & Right Rotating Ribbon Spools inside recessed deck wells
+            drawRibbonSpool(
+                center = leftSpoolCenter,
+                radius = spoolRadius,
+                angle = ribbonSpoolAngle,
+                chromeColor = theme.hardwareChrome,
+                accentRed = theme.accentRibbonRed
+            )
+            drawRibbonSpool(
+                center = rightSpoolCenter,
+                radius = spoolRadius,
+                angle = -ribbonSpoolAngle,
+                chromeColor = theme.hardwareChrome,
+                accentRed = theme.accentRibbonRed
+            )
+
+            // 5. Metallic Type Guide & Ribbon Vibrator Forks around the active character
+            drawRoundRect(
+                color = theme.hardwareChrome,
+                topLeft = Offset(cx - 32f, cy - 18f - liftOffset * 0.4f),
+                size = Size(10f, 54f),
+                cornerRadius = CornerRadius(3f, 3f)
+            )
+            drawRoundRect(
+                color = theme.hardwareChrome,
+                topLeft = Offset(cx + 22f, cy - 18f - liftOffset * 0.4f),
+                size = Size(10f, 54f),
+                cornerRadius = CornerRadius(3f, 3f)
+            )
+            // Red/Chrome V-notch alignment guide directly under the active character
+            drawLine(
+                color = if (isRedRibbon) theme.accentRibbonRed else theme.hardwareChrome,
+                start = Offset(cx - 10f, cy + 14f),
+                end = Offset(cx, cy + 4f),
+                strokeWidth = 2.5f
+            )
+            drawLine(
+                color = if (isRedRibbon) theme.accentRibbonRed else theme.hardwareChrome,
+                start = Offset(cx + 10f, cy + 14f),
+                end = Offset(cx, cy + 4f),
+                strokeWidth = 2.5f
+            )
+
+            // 6. Center Typebasket & Radial Typebars
+            val basketWidth = (size.width * 0.36f).coerceIn(320f, 540f)
+            val basketHeight = (size.height - cy).coerceAtLeast(160f)
+            drawArc(
+                color = Color(0xFF08090B),
+                startAngle = 180f,
+                sweepAngle = 180f,
+                useCenter = true,
+                topLeft = Offset(cx - basketWidth / 2f, cy + 22f),
+                size = Size(basketWidth, basketHeight * 1.35f)
+            )
+            drawArc(
+                color = theme.hardwareChrome.copy(alpha = 0.55f),
+                startAngle = 180f,
+                sweepAngle = 180f,
+                useCenter = false,
+                topLeft = Offset(cx - basketWidth / 2f, cy + 22f),
+                size = Size(basketWidth, basketHeight * 1.35f),
+                style = Stroke(width = 4f)
+            )
+
+            // Radial fan of resting typebars in the segment comb
+            for (angleIndex in -11..11) {
+                val spreadX = cx + angleIndex * (basketWidth / 26f)
+                drawLine(
+                    color = theme.hardwareChrome.copy(alpha = 0.32f),
+                    start = Offset(spreadX, size.height),
+                    end = Offset(cx + angleIndex * 5.5f, cy + 48f),
+                    strokeWidth = 3f,
+                    cap = StrokeCap.Round
+                )
+            }
+
+            // 7. Active Striking Typebar Hammer
+            val hammerStartY = size.height - 20f
+            val hammerTipY = (cy + 46f) - (strikeProgress.value * 52f)
+            drawLine(
+                color = theme.hardwareChrome,
+                start = Offset(cx, hammerStartY),
+                end = Offset(cx, hammerTipY),
+                strokeWidth = 7f,
                 cap = StrokeCap.Round
             )
+            drawRoundRect(
+                color = theme.hardwareChrome,
+                topLeft = Offset(cx - 9f, hammerTipY - 14f),
+                size = Size(18f, 20f),
+                cornerRadius = CornerRadius(4f, 4f)
+            )
+
+            // 8. If in Twilight Mode, draw the Brass Clip-On Lamp Fixture mounted at the typehead
+            if (theme.isTwilight) {
+                drawBrassTorchFixture(cx, cy + 38f)
+            }
         }
 
-        // 5. Active Striking Typebar Hammer
-        val hammerStartY = cy + 130f
-        val hammerTipY = (cy + 58f) - (strikeProgress.value * 62f)
-        drawLine(
-            color = theme.hardwareChrome,
-            start = Offset(cx, hammerStartY),
-            end = Offset(cx, hammerTipY),
-            strokeWidth = 7f,
-            cap = StrokeCap.Round
-        )
-        // Type slug head
-        drawRoundRect(
-            color = theme.hardwareChrome,
-            topLeft = Offset(cx - 9f, hammerTipY - 14f),
-            size = Size(18f, 20f),
-            cornerRadius = CornerRadius(4f, 4f)
-        )
+        // 9. Interactive Mechanical Deck Controls & Odometer Plate along the bottom edge
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(horizontal = 28.dp, vertical = 12.dp)
+        ) {
+            // Left Mechanical Control: Carriage Return Lever + Hardcore Overstrike Switch
+            Row(
+                modifier = Modifier.align(Alignment.BottomStart),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                DeckMechanicalSwitch(
+                    label = "CARRIAGE RETURN",
+                    subLabel = "LINE FEED ↵",
+                    isActive = false,
+                    activeColor = theme.accentRibbonRed,
+                    chromeColor = theme.hardwareChrome,
+                    onClick = onCarriageReturn
+                )
+                DeckMechanicalSwitch(
+                    label = "HARDCORE MODE",
+                    subLabel = if (isHardcoreMode) "OVERSTRIKE ON" else "MODERN EDIT",
+                    isActive = isHardcoreMode,
+                    activeColor = Color(0xFFD9822B),
+                    chromeColor = theme.hardwareChrome,
+                    onClick = onToggleHardcore
+                )
+            }
 
-        // 6. If in Twilight Mode, draw the Brass Clip-On Lamp Fixture mounted at the typehead
-        if (theme.isTwilight) {
-            drawBrassTorchFixture(cx, cy + 52f)
+            // Center Vintage Brass Nameplate & Odometer
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .border(1.5.dp, Color(0xFF9C8253), RoundedCornerShape(6.dp)),
+                color = Color(0xFF1A1712),
+                shape = RoundedCornerShape(6.dp),
+                tonalElevation = 6.dp
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Text(
+                        text = "L:${(cursorLine + 1).toString().padStart(3, '0')}",
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        color = Color(0xFFE6C891)
+                    )
+                    Text(
+                        text = "• ROYAL STANDARD •",
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.ExtraBold,
+                        letterSpacing = 2.sp,
+                        fontSize = 12.sp,
+                        color = Color(0xFFC5A367)
+                    )
+                    Text(
+                        text = "C:${cursorCol.toString().padStart(2, '0')} | ${charCount.toString().padStart(5, '0')} KEYS",
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        color = Color(0xFFE6C891)
+                    )
+                }
+            }
+
+            // Right Mechanical Control: Bichrome Ribbon Color Selector Switch
+            Row(
+                modifier = Modifier.align(Alignment.BottomEnd),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                DeckMechanicalSwitch(
+                    label = "RIBBON SELECTOR",
+                    subLabel = if (isRedRibbon) "RED LOWER INK" else "BLACK UPPER INK",
+                    isActive = isRedRibbon,
+                    activeColor = theme.accentRibbonRed,
+                    chromeColor = theme.hardwareChrome,
+                    onClick = onToggleRibbon
+                )
+            }
         }
     }
 }
 
+@Composable
+private fun DeckMechanicalSwitch(
+    label: String,
+    subLabel: String,
+    isActive: Boolean,
+    activeColor: Color,
+    chromeColor: Color,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .clickable { onClick() }
+            .border(1.dp, chromeColor.copy(alpha = 0.45f), RoundedCornerShape(8.dp)),
+        color = Color(0xFF141619).copy(alpha = 0.9f),
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(12.dp)
+                    .clip(CircleShape)
+                    .background(if (isActive) activeColor else chromeColor.copy(alpha = 0.4f))
+                    .border(1.dp, chromeColor, CircleShape)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Column {
+                Text(
+                    text = label,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 10.sp,
+                    color = chromeColor
+                )
+                Text(
+                    text = subLabel,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 9.sp,
+                    color = if (isActive) activeColor else chromeColor.copy(alpha = 0.65f)
+                )
+            }
+        }
+    }
+}
+
+private fun DrawScope.drawRibbonSpool(
+    center: Offset,
+    radius: Float,
+    angle: Float,
+    chromeColor: Color,
+    accentRed: Color
+) {
+    // Recessed shadow well in the typewriter deck
+    drawCircle(
+        color = Color(0xFF070809),
+        radius = radius + 8f,
+        center = center
+    )
+    // Wound ink ribbon bulk inside the spool
+    drawCircle(
+        color = Color(0xFF1D1E22),
+        radius = radius * 0.82f,
+        center = center
+    )
+    drawCircle(
+        color = accentRed.copy(alpha = 0.55f),
+        radius = radius * 0.82f,
+        center = center,
+        style = Stroke(width = 4f)
+    )
+    // Outer metallic spool rim
+    drawCircle(
+        color = chromeColor.copy(alpha = 0.75f),
+        radius = radius,
+        center = center,
+        style = Stroke(width = 4.5f)
+    )
+
+    // Rotating 3-spoke vintage metal reel
+    rotate(degrees = angle, pivot = center) {
+        for (i in 0 until 3) {
+            val rad = Math.toRadians((i * 120.0))
+            val endX = center.x + (radius * 0.95f * cos(rad)).toFloat()
+            val endY = center.y + (radius * 0.95f * sin(rad)).toFloat()
+            drawLine(
+                color = chromeColor.copy(alpha = 0.8f),
+                start = center,
+                end = Offset(endX, endY),
+                strokeWidth = 7f,
+                cap = StrokeCap.Round
+            )
+        }
+    }
+
+    // Center brass thumb-nut
+    drawCircle(
+        color = Color(0xFFB5945B),
+        radius = radius * 0.22f,
+        center = center
+    )
+    drawCircle(
+        color = Color(0xFF231F18),
+        radius = radius * 0.08f,
+        center = center
+    )
+}
+
 private fun DrawScope.drawBrassTorchFixture(cx: Float, lampY: Float) {
-    // Brass hood & bulb mount pointing upwards toward the paper
     drawRoundRect(
         color = Color(0xFF8C6D3B),
         topLeft = Offset(cx - 26f, lampY),
         size = Size(52f, 24f),
         cornerRadius = CornerRadius(10f, 10f)
     )
-    // Glowing warm filament slit at the top of the brass hood
     drawRoundRect(
         color = Color(0xFFFFE49E),
         topLeft = Offset(cx - 18f, lampY - 4f),
@@ -241,9 +563,7 @@ private fun DrawScope.drawBrassTorchFixture(cx: Float, lampY: Float) {
 }
 
 /**
- * Twilight Mode Torchlight Overlay:
- * Covers the screen in darkness and carves out a flickering, warm tungsten torch cone
- * originating from the typehead and illuminating the written words above it.
+ * Twilight Mode Torchlight Overlay
  */
 @Composable
 fun TwilightTorchOverlay(
@@ -258,10 +578,8 @@ fun TwilightTorchOverlay(
         while (true) {
             withFrameMillis { frameMs ->
                 val t = frameMs / 1000.0
-                // Gentle organic candle/tungsten filament wave
                 val slowWave = (sin(t * 2.7) * 0.03 + sin(t * 6.3) * 0.02).toFloat()
 
-                // Occasional realistic voltage dip / flicker every few seconds
                 val glitchDip = if (frameMs > nextGlitchTime) {
                     if (Random.nextFloat() < 0.035f) {
                         nextGlitchTime = frameMs + Random.nextLong(1400L, 4500L)
@@ -278,29 +596,25 @@ fun TwilightTorchOverlay(
     Canvas(
         modifier = modifier
             .fillMaxSize()
-            // Offscreen compositing allows DstOut/Multiply blending to carve light out of darkness
             .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
     ) {
-        val origin = Offset(typeheadCenter.x, typeheadCenter.y + 48f)
+        val origin = Offset(typeheadCenter.x, typeheadCenter.y + 38f)
 
-        // 1. Pitch-black ambient room layer
         drawRect(
             color = Color(0xF6030305),
             size = size
         )
 
-        // 2. Carve out the upward conical torch beam + radial halo around the typehead
         val conePath = Path().apply {
             moveTo(origin.x - 24f, origin.y)
             lineTo(origin.x + 24f, origin.y)
-            lineTo(origin.x + size.width * 0.46f + beamSwayX, 0f)
-            lineTo(origin.x - size.width * 0.46f + beamSwayX, 0f)
+            lineTo(origin.x + size.width * 0.48f + beamSwayX, 0f)
+            lineTo(origin.x - size.width * 0.48f + beamSwayX, 0f)
             close()
         }
 
-        val maxRadius = (typeheadCenter.y * 1.18f).coerceAtLeast(500f) * (0.92f + flickerIntensity * 0.08f)
+        val maxRadius = (typeheadCenter.y * 1.15f).coerceAtLeast(520f) * (0.92f + flickerIntensity * 0.08f)
 
-        // Soft conical illumination extending upward from the typehead
         drawPath(
             path = conePath,
             brush = Brush.radialGradient(
@@ -310,13 +624,12 @@ fun TwilightTorchOverlay(
                     Color.Black.copy(alpha = 0.35f * flickerIntensity),
                     Color.Transparent
                 ),
-                center = Offset(typeheadCenter.x + beamSwayX * 0.4f, typeheadCenter.y - 80f),
+                center = Offset(typeheadCenter.x + beamSwayX * 0.4f, typeheadCenter.y - 90f),
                 radius = maxRadius
             ),
             blendMode = BlendMode.DstOut
         )
 
-        // Secondary tight hotspot right on the active typing head & current line
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
@@ -325,14 +638,13 @@ fun TwilightTorchOverlay(
                     Color.Transparent
                 ),
                 center = Offset(typeheadCenter.x, typeheadCenter.y - 20f),
-                radius = 340f * flickerIntensity
+                radius = 350f * flickerIntensity
             ),
-            radius = 340f * flickerIntensity,
+            radius = 350f * flickerIntensity,
             center = Offset(typeheadCenter.x, typeheadCenter.y - 20f),
             blendMode = BlendMode.DstOut
         )
 
-        // 3. Add a warm amber/tungsten glow tint over the illuminated area
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
