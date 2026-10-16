@@ -10,7 +10,7 @@ android {
 
     defaultConfig {
         applicationId = "com.prtxkmrsng.typewriter"
-        minSdk = 29
+        minSdk = 26
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
@@ -51,6 +51,4 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
     implementation(libs.androidx.documentfile)
-
-    debugImplementation(libs.androidx.ui.tooling)
 }
