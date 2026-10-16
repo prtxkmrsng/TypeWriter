@@ -1,5 +1,8 @@
 package com.prtxkmrsng.typewriter.ui
 
+import android.content.ClipData
+import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -9,6 +12,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -33,7 +37,9 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -48,7 +54,29 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.prtxkmrsng.typewriter.data.ExportedFileResult
 import kotlin.math.roundToInt
+
+/**
+ * Launches the native Android Share Sheet for an exported PDF, HTML, or Markdown file.
+ */
+private fun shareExportedManuscript(context: Context, exported: ExportedFileResult) {
+    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+        type = exported.mimeType
+        putExtra(Intent.EXTRA_STREAM, exported.uri)
+        putExtra(Intent.EXTRA_SUBJECT, exported.fileName)
+        putExtra(
+            Intent.EXTRA_TEXT,
+            "Typed on TypeWriter (@prtxkmrsng) — ${exported.fileName}"
+        )
+        clipData = ClipData.newRawUri(exported.fileName, exported.uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    val chooser = Intent.createChooser(shareIntent, "Share ${exported.fileName}").apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    runCatching { context.startActivity(chooser) }
+}
 
 @Composable
 fun TypewriterRootScreen(viewModel: TypewriterViewModel) {
@@ -110,7 +138,16 @@ private fun OnboardingFolderScreen(onSelectFolder: () -> Unit) {
                     letterSpacing = 4.sp,
                     color = Color(0xFF1F1E1B)
                 )
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "BY @PRTXKMRSNG",
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 11.sp,
+                    letterSpacing = 2.sp,
+                    color = Color(0xFFB82921)
+                )
+                Spacer(modifier = Modifier.height(14.dp))
                 Text(
                     text = "Every page you type is saved offline as a pure Markdown (.md) manuscript. Choose a dedicated folder on your tablet where your drafts will live and autosave.",
                     fontFamily = FontFamily.Monospace,
@@ -147,11 +184,13 @@ private fun TypewriterWorkspace(
     viewModel: TypewriterViewModel,
     onChangeFolder: () -> Unit
 ) {
+    val context = LocalContext.current
     val theme = state.themeMode
     val focusRequester = remember { FocusRequester() }
     var viewportSize by remember { mutableStateOf(IntSize.Zero) }
     var isDrawerOpen by remember { mutableStateOf(false) }
     var showNewDocDialog by remember { mutableStateOf(false) }
+    var showDeveloperInfoDialog by remember { mutableStateOf(false) }
 
     val textMeasurer = rememberTextMeasurer()
     val density = LocalDensity.current
@@ -167,8 +206,6 @@ private fun TypewriterWorkspace(
     val textAreaWidthPx = state.maxCharsPerLine * charWidthPx
     val paperWidthPx = textAreaWidthPx + (paperHorizontalPaddingPx * 2f)
 
-    // Page geometry for 55-line perforated fanfold sheets:
-    // Each page has a 2-line header, 55 content lines, and a 2-line footer/perforation zone.
     val linesPerPage = state.linesPerPage
     val pageHeaderPx = lineHeightPx * 2.0f
     val pageFooterPx = lineHeightPx * 2.0f
@@ -185,7 +222,6 @@ private fun TypewriterWorkspace(
     val totalPages = ((state.lines.size - 1).coerceAtLeast(0) / linesPerPage) + 1
     val lineInPage = (state.cursorLine % linesPerPage) + 1
 
-    // Fixed Typehead position: centered horizontally, 76% down from top
     val typeheadCenter = remember(viewportSize) {
         Offset(
             x = viewportSize.width / 2f,
@@ -214,8 +250,8 @@ private fun TypewriterWorkspace(
         label = "PlatenRollY"
     )
 
-    LaunchedEffect(Unit, isDrawerOpen, showNewDocDialog, state.isPreviewMode) {
-        if (!isDrawerOpen && !showNewDocDialog && !state.isPreviewMode) {
+    LaunchedEffect(Unit, isDrawerOpen, showNewDocDialog, showDeveloperInfoDialog, state.isPreviewMode) {
+        if (!isDrawerOpen && !showNewDocDialog && !showDeveloperInfoDialog && !state.isPreviewMode) {
             focusRequester.requestFocus()
         }
     }
@@ -309,7 +345,6 @@ private fun TypewriterWorkspace(
         }
 
         Canvas(modifier = Modifier.fillMaxSize()) {
-            // Render visible pages plus one extra feed page below the current page
             val pagesToDraw = (totalPages + 1).coerceAtLeast(2)
 
             for (pageIdx in 0 until pagesToDraw) {
@@ -318,21 +353,18 @@ private fun TypewriterWorkspace(
 
                 if (pageBottomY < -120f || pageTopY > size.height + 120f) continue
 
-                // Drop shadow on desk
                 drawRect(
                     color = theme.paperShadow,
                     topLeft = Offset(animatedPaperX + 14f, pageTopY + 14f),
                     size = Size(paperWidthPx, pageStridePx)
                 )
 
-                // Main page sheet
                 drawRect(
                     color = theme.paperBackground,
                     topLeft = Offset(animatedPaperX, pageTopY),
                     size = Size(paperWidthPx, pageStridePx)
                 )
 
-                // Left red margin line
                 val leftMarginX = animatedPaperX + paperHorizontalPaddingPx - 14f
                 drawLine(
                     color = theme.marginLineColor,
@@ -341,7 +373,6 @@ private fun TypewriterWorkspace(
                     strokeWidth = 2f
                 )
 
-                // Right bell warning margin line
                 val bellLineX = animatedPaperX + paperHorizontalPaddingPx + (state.bellWarningCol * charWidthPx)
                 drawLine(
                     color = theme.marginLineColor.copy(alpha = 0.14f),
@@ -350,7 +381,6 @@ private fun TypewriterWorkspace(
                     strokeWidth = 1.5f
                 )
 
-                // Top-right Page Stamp ("PAGE 01 / 02  •  55 LINES")
                 val stampLayout = textMeasurer.measure(
                     text = "PAGE ${(pageIdx + 1).toString().padStart(2, '0')} OF ${totalPages.toString().padStart(2, '0')}",
                     style = pageStampStyle
@@ -363,15 +393,12 @@ private fun TypewriterWorkspace(
                     )
                 )
 
-                // Bottom Page-Break Perforation Seam (every 55 lines)
-                // Recessed crease shadow
                 drawLine(
                     color = Color.Black.copy(alpha = 0.16f),
                     start = Offset(animatedPaperX, pageBottomY),
                     end = Offset(animatedPaperX + paperWidthPx, pageBottomY),
                     strokeWidth = 4f
                 )
-                // Dashed tear-off perforation line
                 drawLine(
                     color = theme.inkColor.copy(alpha = 0.45f),
                     start = Offset(animatedPaperX + 12f, pageBottomY),
@@ -379,7 +406,6 @@ private fun TypewriterWorkspace(
                     strokeWidth = 2f,
                     pathEffect = perforationDash
                 )
-                // Left & Right Fanfold Tear Notches on the paper edge
                 drawCircle(
                     color = theme.deskBackground,
                     radius = 7f,
@@ -393,7 +419,7 @@ private fun TypewriterWorkspace(
             }
         }
 
-        // 2. VIRTUALIZED UNBOUNDED LINE RENDERER (Never clips at screen height or width!)
+        // 2. VIRTUALIZED UNBOUNDED LINE RENDERER WITH ORGANIC INK-PRESSURE VARIATION
         val activeInk = if (state.isRedRibbon) theme.accentRibbonRed else theme.inkColor
         val textAreaWidthDp = with(density) { (textAreaWidthPx + charWidthPx * 4f).toDp() }
         val lineHeightDp = with(density) { lineHeightPx.toDp() }
@@ -403,7 +429,6 @@ private fun TypewriterWorkspace(
             state.lines.forEachIndexed { lineIdx, lineText ->
                 val screenY = animatedPaperY + lineYInPaperRoll(lineIdx)
 
-                // Only compose lines currently within the vertical viewport
                 if (screenY >= -lineHeightPx * 2f && screenY <= viewportSize.height + lineHeightPx * 2f) {
                     Box(
                         modifier = Modifier
@@ -417,9 +442,10 @@ private fun TypewriterWorkspace(
                             .height(lineHeightDp),
                         contentAlignment = Alignment.TopStart
                     ) {
-                        val styledLine = remember(lineText, activeInk, theme.accentRibbonRed) {
+                        val styledLine = remember(lineIdx, lineText, activeInk, theme.accentRibbonRed) {
                             formatMonospaceMarkdownLine(
                                 line = lineText,
+                                lineIndex = lineIdx,
                                 baseInkColor = activeInk,
                                 accentRedColor = theme.accentRibbonRed
                             )
@@ -431,16 +457,28 @@ private fun TypewriterWorkspace(
                             softWrap = false
                         )
 
-                        // Render physical Hardcore Mode overstruck characters on this line
+                        // Render physical Hardcore Mode overstruck characters with heavy ink imprint
                         state.overstruckCells.forEach { (cell, oldChars) ->
                             if (cell.first == lineIdx) {
                                 val colOffsetDp = with(density) { (cell.second * charWidthPx).toDp() }
                                 oldChars.forEachIndexed { strikeIdx, oldChar ->
+                                    val overstrikeAnnotated = remember(lineIdx, cell.second, oldChar, theme.inkColor) {
+                                        buildAnnotatedString {
+                                            withStyle(
+                                                computeMechanicalCharStyle(
+                                                    lineIndex = lineIdx + strikeIdx + 1,
+                                                    colIndex = cell.second,
+                                                    char = oldChar,
+                                                    targetInkColor = theme.inkColor.copy(alpha = 0.78f)
+                                                )
+                                            ) {
+                                                append(oldChar)
+                                            }
+                                        }
+                                    }
                                     Text(
-                                        text = oldChar.toString(),
-                                        style = TypewriterTypography.bodyMonospace.copy(
-                                            color = theme.inkColor.copy(alpha = 0.72f)
-                                        ),
+                                        text = overstrikeAnnotated,
+                                        style = TypewriterTypography.bodyMonospace,
                                         modifier = Modifier.offset(
                                             x = colOffsetDp,
                                             y = if (strikeIdx % 2 == 0) (-0.5).dp else 0.5.dp
@@ -454,7 +492,7 @@ private fun TypewriterWorkspace(
             }
         }
 
-        // 3. FIXED TYPEHEAD, RIBBON, ROTATING SPOOLS & MECHANICAL DECK (at 76% height)
+        // 3. FIXED TYPEHEAD, RIBBON, ROTATING SPOOLS & MECHANICAL DECK
         TypewriterHardwareOverlay(
             typeheadCenter = typeheadCenter,
             theme = theme,
@@ -478,7 +516,7 @@ private fun TypewriterWorkspace(
             TwilightTorchOverlay(typeheadCenter = typeheadCenter)
         }
 
-        // 5. TOP MINIMALIST HUD BAR WITH PAGE COUNTER
+        // 5. TOP MINIMALIST HUD BAR WITH PAGE COUNTER & DEVELOPER INFO BUTTON
         TopTypewriterHud(
             state = state,
             currentPage = currentPage,
@@ -490,18 +528,37 @@ private fun TypewriterWorkspace(
             onTogglePreview = viewModel::togglePreviewMode,
             onToggleMute = viewModel::toggleMute,
             onSelectTheme = viewModel::setTheme,
+            onShowDeveloperInfo = { showDeveloperInfoDialog = true },
             modifier = Modifier.align(Alignment.TopCenter)
         )
 
-        // 6. READ / PREVIEW MANUSCRIPT MODAL SHEET WITH PDF & HTML EXPORT
+        // 6. READ / PREVIEW MANUSCRIPT MODAL SHEET WITH PDF/HTML EXPORT + ANDROID SHARE SHEET
         AnimatedVisibility(
             visible = state.isPreviewMode,
             modifier = Modifier.fillMaxSize()
         ) {
             ManuscriptPreviewModal(
                 state = state,
-                onExportPdf = viewModel::exportManuscriptAsPdf,
-                onExportHtml = viewModel::exportManuscriptAsHtml,
+                onExportPdf = { viewModel.exportManuscriptAsPdf() },
+                onSharePdf = {
+                    viewModel.exportManuscriptAsPdf { exported ->
+                        shareExportedManuscript(context, exported)
+                    }
+                },
+                onExportHtml = { viewModel.exportManuscriptAsHtml() },
+                onShareHtml = {
+                    viewModel.exportManuscriptAsHtml { exported ->
+                        shareExportedManuscript(context, exported)
+                    }
+                },
+                onShareMarkdown = {
+                    viewModel.shareActiveMarkdown { exported ->
+                        shareExportedManuscript(context, exported)
+                    }
+                },
+                onShareLastExported = { exported ->
+                    shareExportedManuscript(context, exported)
+                },
                 onClose = viewModel::togglePreviewMode
             )
         }
@@ -522,6 +579,10 @@ private fun TypewriterWorkspace(
                     showNewDocDialog = true
                 },
                 onChangeFolder = onChangeFolder,
+                onShowDeveloperInfo = {
+                    isDrawerOpen = false
+                    showDeveloperInfoDialog = true
+                },
                 onClose = { isDrawerOpen = false }
             )
         }
@@ -534,6 +595,12 @@ private fun TypewriterWorkspace(
                 showNewDocDialog = false
                 viewModel.createNewDocument(title)
             }
+        )
+    }
+
+    if (showDeveloperInfoDialog) {
+        DeveloperInfoDialog(
+            onDismiss = { showDeveloperInfoDialog = false }
         )
     }
 }
@@ -550,6 +617,7 @@ private fun TopTypewriterHud(
     onTogglePreview: () -> Unit,
     onToggleMute: () -> Unit,
     onSelectTheme: (TypewriterThemeMode) -> Unit,
+    onShowDeveloperInfo: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val theme = state.themeMode
@@ -585,7 +653,7 @@ private fun TopTypewriterHud(
                     )
                     Text(
                         text = when (state.saveStatus) {
-                            SaveStatus.SAVED -> "PAGE $currentPage/$totalPages (LINE$lineInPage/${state.linesPerPage}) •${state.wordCount} WORDS • COL ${state.cursorCol}/${state.maxCharsPerLine}"
+                            SaveStatus.SAVED -> "PAGE $currentPage/$totalPages (LINE $lineInPage/${state.linesPerPage}) • ${state.wordCount} WORDS • COL ${state.cursorCol}/${state.maxCharsPerLine}"
                             SaveStatus.SAVING -> "SAVING TO DISK..."
                             SaveStatus.UNSAVED -> "TYPING • PAGE $currentPage/$totalPages (LINE $lineInPage/${state.linesPerPage})"
                         },
@@ -598,7 +666,7 @@ private fun TopTypewriterHud(
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 FilterChip(
                     selected = state.isHardcoreMode,
@@ -707,6 +775,14 @@ private fun TopTypewriterHud(
                 IconButton(onClick = onNewDocument) {
                     Icon(Icons.Default.NoteAdd, contentDescription = "New Manuscript")
                 }
+
+                // Developer Info Button (@prtxkmrsng)
+                IconButton(onClick = onShowDeveloperInfo) {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = "About Developer @prtxkmrsng"
+                    )
+                }
             }
         }
     }
@@ -716,7 +792,11 @@ private fun TopTypewriterHud(
 private fun ManuscriptPreviewModal(
     state: TypewriterUiState,
     onExportPdf: () -> Unit,
+    onSharePdf: () -> Unit,
     onExportHtml: () -> Unit,
+    onShareHtml: () -> Unit,
+    onShareMarkdown: () -> Unit,
+    onShareLastExported: (ExportedFileResult) -> Unit,
     onClose: () -> Unit
 ) {
     val theme = state.themeMode
@@ -734,7 +814,7 @@ private fun ManuscriptPreviewModal(
     ) {
         Surface(
             modifier = Modifier
-                .widthIn(max = 860.dp)
+                .widthIn(max = 920.dp)
                 .fillMaxHeight()
                 .padding(horizontal = 24.dp),
             color = theme.paperBackground,
@@ -745,9 +825,9 @@ private fun ManuscriptPreviewModal(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 56.dp, vertical = 36.dp)
+                    .padding(horizontal = 48.dp, vertical = 32.dp)
             ) {
-                // Header Bar with Export PDF / Export HTML / Close buttons
+                // Header Bar with Export PDF + Share PDF, Export HTML + Share HTML, Share .MD, Close
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -762,7 +842,7 @@ private fun ManuscriptPreviewModal(
                             color = theme.inkColor
                         )
                         Text(
-                            text = "${pages.size} PAGES (${state.linesPerPage} LINES/PAGE) •${state.wordCount} WORDS",
+                            text = "${pages.size} PAGES (${state.linesPerPage} LINES/PAGE) • ${state.wordCount} WORDS",
                             fontFamily = FontFamily.Monospace,
                             fontSize = 11.sp,
                             color = theme.inkColor.copy(alpha = 0.6f)
@@ -770,29 +850,71 @@ private fun ManuscriptPreviewModal(
                     }
 
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // PDF Export + Immediate PDF Share Sheet button
                         Button(
                             onClick = onExportPdf,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = theme.accentRibbonRed,
                                 contentColor = Color.White
                             ),
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                         ) {
-                            Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(15.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("EXPORT PDF", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                            Text("EXPORT PDF", fontFamily = FontFamily.Monospace, fontSize = 11.sp)
                         }
 
+                        FilledTonalIconButton(
+                            onClick = onSharePdf,
+                            colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                containerColor = theme.accentRibbonRed.copy(alpha = 0.16f),
+                                contentColor = theme.accentRibbonRed
+                            )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Share,
+                                contentDescription = "Share PDF via Android Share Sheet",
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(4.dp))
+
+                        // HTML Export + Immediate HTML Share Sheet button
                         OutlinedButton(
                             onClick = onExportHtml,
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                         ) {
-                            Icon(Icons.Default.Code, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.Code, contentDescription = null, modifier = Modifier.size(15.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("EXPORT HTML", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                            Text("EXPORT HTML", fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                        }
+
+                        FilledTonalIconButton(
+                            onClick = onShareHtml,
+                            colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                containerColor = theme.inkColor.copy(alpha = 0.10f),
+                                contentColor = theme.inkColor
+                            )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Share,
+                                contentDescription = "Share HTML via Android Share Sheet",
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
+
+                        // Share raw .MD button
+                        OutlinedButton(
+                            onClick = onShareMarkdown,
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+                        ) {
+                            Icon(Icons.Default.IosShare, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(".MD", fontFamily = FontFamily.Monospace, fontSize = 11.sp)
                         }
 
                         TextButton(onClick = onClose) {
@@ -800,13 +922,14 @@ private fun ManuscriptPreviewModal(
                                 text = "CLOSE [ESC]",
                                 fontFamily = FontFamily.Monospace,
                                 fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp,
                                 color = theme.inkColor
                             )
                         }
                     }
                 }
 
-                // Export Status Banner
+                // Export Status Banner with one-tap "SHARE FILE" button
                 state.exportStatusMessage?.let { statusMsg ->
                     Spacer(modifier = Modifier.height(10.dp))
                     Surface(
@@ -814,14 +937,42 @@ private fun ManuscriptPreviewModal(
                         shape = RoundedCornerShape(6.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(
-                            text = statusMsg,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp,
-                            color = theme.accentRibbonRed,
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
-                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = statusMsg,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = theme.accentRibbonRed
+                            )
+                            state.lastExportedFile?.let { exported ->
+                                TextButton(
+                                    onClick = { onShareLastExported(exported) },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Share,
+                                        contentDescription = null,
+                                        tint = theme.accentRibbonRed,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "SHARE ${exported.fileName.uppercase()}",
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 11.sp,
+                                        color = theme.accentRibbonRed
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -844,7 +995,7 @@ private fun ManuscriptPreviewModal(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = "SHEET ${pageIndex + 1} OF${pages.size}",
+                                text = "SHEET ${pageIndex + 1} OF ${pages.size}",
                                 fontFamily = FontFamily.Monospace,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 11.sp,
@@ -858,36 +1009,49 @@ private fun ManuscriptPreviewModal(
                             )
                         }
 
-                        pageLines.forEach { rawLine ->
+                        pageLines.forEachIndexed { lineInPageIdx, rawLine ->
+                            val globalLineIdx = pageIndex * state.linesPerPage + lineInPageIdx
                             val trimmed = rawLine.trim()
                             when {
                                 trimmed.startsWith("### ") -> {
                                     Text(
-                                        text = trimmed.removePrefix("### "),
+                                        text = parseCleanMarkdownInline(
+                                            raw = trimmed.removePrefix("### "),
+                                            lineIndex = globalLineIdx,
+                                            inkColor = theme.accentRibbonRed,
+                                            accentRed = theme.accentRibbonRed
+                                        ),
                                         fontFamily = FontFamily.Monospace,
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 20.sp,
-                                        color = theme.accentRibbonRed,
                                         modifier = Modifier.padding(top = 10.dp, bottom = 4.dp)
                                     )
                                 }
                                 trimmed.startsWith("## ") -> {
                                     Text(
-                                        text = trimmed.removePrefix("## "),
+                                        text = parseCleanMarkdownInline(
+                                            raw = trimmed.removePrefix("## "),
+                                            lineIndex = globalLineIdx,
+                                            inkColor = theme.accentRibbonRed,
+                                            accentRed = theme.accentRibbonRed
+                                        ),
                                         fontFamily = FontFamily.Monospace,
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 23.sp,
-                                        color = theme.accentRibbonRed,
                                         modifier = Modifier.padding(top = 14.dp, bottom = 6.dp)
                                     )
                                 }
                                 trimmed.startsWith("# ") -> {
                                     Text(
-                                        text = trimmed.removePrefix("# "),
+                                        text = parseCleanMarkdownInline(
+                                            raw = trimmed.removePrefix("# "),
+                                            lineIndex = globalLineIdx,
+                                            inkColor = theme.accentRibbonRed,
+                                            accentRed = theme.accentRibbonRed
+                                        ),
                                         fontFamily = FontFamily.Monospace,
                                         fontWeight = FontWeight.ExtraBold,
                                         fontSize = 26.sp,
-                                        color = theme.accentRibbonRed,
                                         modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
                                     )
                                 }
@@ -905,7 +1069,12 @@ private fun ManuscriptPreviewModal(
                                         )
                                         Spacer(modifier = Modifier.width(12.dp))
                                         Text(
-                                            text = parseCleanMarkdownInline(trimmed.removePrefix("> "), theme.inkColor, theme.accentRibbonRed),
+                                            text = parseCleanMarkdownInline(
+                                                raw = trimmed.removePrefix("> "),
+                                                lineIndex = globalLineIdx,
+                                                inkColor = theme.inkColor,
+                                                accentRed = theme.accentRibbonRed
+                                            ),
                                             fontFamily = FontFamily.Monospace,
                                             fontStyle = FontStyle.Italic,
                                             fontSize = 17.sp,
@@ -915,7 +1084,12 @@ private fun ManuscriptPreviewModal(
                                 }
                                 else -> {
                                     Text(
-                                        text = parseCleanMarkdownInline(rawLine, theme.inkColor, theme.accentRibbonRed),
+                                        text = parseCleanMarkdownInline(
+                                            raw = rawLine,
+                                            lineIndex = globalLineIdx,
+                                            inkColor = theme.inkColor,
+                                            accentRed = theme.accentRibbonRed
+                                        ),
                                         fontFamily = FontFamily.Monospace,
                                         fontSize = 17.sp,
                                         lineHeight = 28.sp
@@ -924,7 +1098,6 @@ private fun ManuscriptPreviewModal(
                             }
                         }
 
-                        // Perforation divider between 55-line pages
                         if (pageIndex < pages.lastIndex) {
                             Spacer(modifier = Modifier.height(20.dp))
                             HorizontalDivider(
@@ -953,68 +1126,286 @@ private fun ManuscriptPreviewModal(
     }
 }
 
+/**
+ * Strips raw Markdown tokens for the Manuscript Proof view while retaining organic
+ * per-character mechanical ink-pressure variation.
+ */
 private fun parseCleanMarkdownInline(
     raw: String,
+    lineIndex: Int,
     inkColor: Color,
     accentRed: Color
 ) = buildAnnotatedString {
     var i = 0
+    var visualCol = 0
+
+    fun appendWithMechanicalPressure(
+        segment: String,
+        targetColor: Color,
+        extraStyle: SpanStyle = SpanStyle()
+    ) {
+        segment.forEach { ch ->
+            if (ch == ' ') {
+                append(' ')
+            } else {
+                val pressureStyle = computeMechanicalCharStyle(
+                    lineIndex = lineIndex,
+                    colIndex = visualCol,
+                    char = ch,
+                    targetInkColor = targetColor
+                ).merge(extraStyle)
+                withStyle(pressureStyle) {
+                    append(ch)
+                }
+            }
+            visualCol++
+        }
+    }
+
     while (i < raw.length) {
         when {
             raw.startsWith("**", i) -> {
                 val end = raw.indexOf("**", i + 2)
                 if (end != -1) {
-                    withStyle(SpanStyle(fontWeight = FontWeight.ExtraBold, color = inkColor)) {
-                        append(raw.substring(i + 2, end))
-                    }
+                    appendWithMechanicalPressure(
+                        segment = raw.substring(i + 2, end),
+                        targetColor = inkColor,
+                        extraStyle = SpanStyle(fontWeight = FontWeight.ExtraBold)
+                    )
                     i = end + 2
                 } else {
-                    append(raw[i])
+                    appendWithMechanicalPressure(raw[i].toString(), inkColor)
                     i++
                 }
             }
             raw.startsWith("~~", i) -> {
                 val end = raw.indexOf("~~", i + 2)
                 if (end != -1) {
-                    withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough, color = inkColor.copy(alpha = 0.6f))) {
-                        append(raw.substring(i + 2, end))
-                    }
+                    appendWithMechanicalPressure(
+                        segment = raw.substring(i + 2, end),
+                        targetColor = inkColor.copy(alpha = 0.6f),
+                        extraStyle = SpanStyle(textDecoration = TextDecoration.LineThrough)
+                    )
                     i = end + 2
                 } else {
-                    append(raw[i])
+                    appendWithMechanicalPressure(raw[i].toString(), inkColor)
                     i++
                 }
             }
             raw.startsWith("*", i) -> {
                 val end = raw.indexOf("*", i + 1)
                 if (end != -1) {
-                    withStyle(SpanStyle(fontStyle = FontStyle.Italic, color = inkColor)) {
-                        append(raw.substring(i + 1, end))
-                    }
+                    appendWithMechanicalPressure(
+                        segment = raw.substring(i + 1, end),
+                        targetColor = inkColor,
+                        extraStyle = SpanStyle(fontStyle = FontStyle.Italic)
+                    )
                     i = end + 1
                 } else {
-                    append(raw[i])
+                    appendWithMechanicalPressure(raw[i].toString(), inkColor)
                     i++
                 }
             }
             raw.startsWith("`", i) -> {
                 val end = raw.indexOf("`", i + 1)
                 if (end != -1) {
-                    withStyle(SpanStyle(background = inkColor.copy(alpha = 0.12f), color = accentRed, fontWeight = FontWeight.SemiBold)) {
-                        append(raw.substring(i + 1, end))
-                    }
+                    appendWithMechanicalPressure(
+                        segment = raw.substring(i + 1, end),
+                        targetColor = accentRed,
+                        extraStyle = SpanStyle(
+                            background = inkColor.copy(alpha = 0.12f),
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    )
                     i = end + 1
                 } else {
-                    append(raw[i])
+                    appendWithMechanicalPressure(raw[i].toString(), inkColor)
                     i++
                 }
             }
             else -> {
-                append(raw[i])
+                appendWithMechanicalPressure(raw[i].toString(), inkColor)
                 i++
             }
         }
     }
+}
+
+/**
+ * Vintage Brass & Ivory Developer Specification Plaque Modal crediting @prtxkmrsng.
+ */
+@Composable
+private fun DeveloperInfoDialog(onDismiss: () -> Unit) {
+    val uriHandler = LocalUriHandler.current
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF1A1713),
+        tonalElevation = 16.dp,
+        shape = RoundedCornerShape(10.dp),
+        title = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.5.dp, Color(0xFFB5945B), RoundedCornerShape(6.dp))
+                    .background(Color(0xFF12100D), RoundedCornerShape(6.dp))
+                    .padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "• PATENTED MECHANICAL REPLICA •",
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                    letterSpacing = 2.sp,
+                    color = Color(0xFFB5945B)
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "TYPEWRITER",
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 22.sp,
+                    letterSpacing = 4.sp,
+                    color = Color(0xFFF5EBD6)
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "CRAFTED & ENGINEERED BY @prtxkmrsng",
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    color = Color(0xFFE05249)
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "An offline, tactile mechanical typewriter built for Android tablets and physical keyboards. Designed to bring the focused rhythm, acoustic feedback, and permanence of ink-on-paper to Markdown writing.",
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp,
+                    color = Color(0xFFE6DEC8)
+                )
+
+                Surface(
+                    color = Color(0xFF24201A),
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "MACHINE SPECIFICATIONS",
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp,
+                            color = Color(0xFFB5945B)
+                        )
+                        Text(
+                            text = "• Designer & Developer: @prtxkmrsng",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
+                            color = Color(0xFFF5EBD6)
+                        )
+                        Text(
+                            text = "• Platen Carriage: 68 Columns (Bell at Col 60)",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
+                            color = Color(0xFFD5CCB8)
+                        )
+                        Text(
+                            text = "• Paper Roll: 55-Line Fanfold Perforation",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
+                            color = Color(0xFFD5CCB8)
+                        )
+                        Text(
+                            text = "• Imprint: Per-Character Ink Pressure & Overstrike",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
+                            color = Color(0xFFD5CCB8)
+                        )
+                        Text(
+                            text = "• Acoustics: Real-Time PCM Mechanical Synthesizer",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
+                            color = Color(0xFFD5CCB8)
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            runCatching { uriHandler.openUri("https://github.com/prtxkmrsng") }
+                        },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(vertical = 8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Person,
+                            contentDescription = null,
+                            tint = Color(0xFFE6C891),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "@prtxkmrsng",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            color = Color(0xFFE6C891)
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            runCatching { uriHandler.openUri("https://github.com/prtxkmrsng/typewriter") }
+                        },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(vertical = 8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Code,
+                            contentDescription = null,
+                            tint = Color(0xFFE6C891),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "SOURCE REPO",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            color = Color(0xFFE6C891)
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFFB5945B),
+                    contentColor = Color(0xFF12100D)
+                )
+            ) {
+                Text(
+                    text = "BACK TO TYPING",
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+    )
 }
 
 @Composable
@@ -1023,6 +1414,7 @@ private fun ManuscriptSidebar(
     onSelectDocument: (com.prtxkmrsng.typewriter.data.MarkdownDocument) -> Unit,
     onNewDocument: () -> Unit,
     onChangeFolder: () -> Unit,
+    onShowDeveloperInfo: () -> Unit,
     onClose: () -> Unit
 ) {
     Surface(
@@ -1102,7 +1494,7 @@ private fun ManuscriptSidebar(
             }
 
             HorizontalDivider(color = Color(0xFF2E2C28))
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             TextButton(
                 onClick = onChangeFolder,
@@ -1115,6 +1507,21 @@ private fun ManuscriptSidebar(
                     fontFamily = FontFamily.Monospace,
                     fontSize = 12.sp,
                     color = Color(0xFFB0ABA0)
+                )
+            }
+
+            TextButton(
+                onClick = onShowDeveloperInfo,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.Info, contentDescription = null, tint = Color(0xFFE6C891))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "BUILT BY @prtxkmrsng",
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp,
+                    color = Color(0xFFE6C891)
                 )
             }
         }
