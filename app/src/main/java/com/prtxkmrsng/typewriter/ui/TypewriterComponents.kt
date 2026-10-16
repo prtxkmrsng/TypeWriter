@@ -39,13 +39,15 @@ import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.random.Random
 
+// Pre-compiled top-level Markdown regexes (zero regex compilation during typing)
+private val REGEX_BOLD = Regex("\\*\\*(.+?)\\*\\*")
+private val REGEX_ITALIC = Regex("(?<!\\*)\\*([^*]+)\\*(?!\\*)|_([^_]+)_")
+private val REGEX_STRIKE = Regex("~~(.+?)~~")
+private val REGEX_CODE = Regex("`([^`]+)`")
+private val REGEX_LIST_PREFIX = Regex("^(\\s*)([-*+]|\\d+\\.)\\s+(\\[[ xX]\\]\\s+)?")
+
 /**
- * Computes a deterministic, organic mechanical typewriter imprint SpanStyle for a single character
- * using only the built-in Monospace font (preserving exact 1:1 horizontal column width).
- *
- * - Varies ribbon ink transfer opacity (74%..100%)
- * - Adds a subtle ink-spread shadow on high-pressure key strikes
- * - Applies a microscopic vertical typebar tolerance (BaselineShift)
+ * Deterministic per-character mechanical typewriter ink-pressure & micro-alignment style.
  */
 fun computeMechanicalCharStyle(
     lineIndex: Int,
@@ -53,27 +55,22 @@ fun computeMechanicalCharStyle(
     char: Char,
     targetInkColor: Color
 ): SpanStyle {
-    // Mix coordinates + char code so each typed letter has a unique, stable mechanical strike feel
     var h = (lineIndex * 3137) xor (colIndex * 997) xor (char.code * 131)
     h = h xor (h ushr 16)
     h *= 0x45d9f3b
     h = h xor (h ushr 16)
     val positiveHash = abs(h)
 
-    // Normalized strike pressure in 0.0f..1.0f
     val pressure = (positiveHash % 1000) / 1000f
 
-    // Ink transfer opacity: lighter strikes look slightly worn; heavy strikes are deep & saturated
     val inkAlpha = when {
         pressure > 0.72f -> 1.0f
         pressure > 0.25f -> 0.86f + (pressure * 0.14f)
-        else -> 0.73f + (pressure * 0.45f)
-    }.coerceIn(0.72f, 1.0f)
+        else -> 0.74f + (pressure * 0.44f)
+    }.coerceIn(0.74f, 1.0f)
 
-    // Microscopic typebar vertical alignment tolerance (-0.020f .. +0.020f)
     val microShift = (((positiveHash / 1000) % 9) - 4) * 0.005f
 
-    // Heavy strikes press more ink from the ribbon into the paper fibers (subtle ink bleed shadow)
     val inkBleedShadow = when {
         pressure > 0.72f -> Shadow(
             color = targetInkColor.copy(alpha = 0.40f),
@@ -96,8 +93,9 @@ fun computeMechanicalCharStyle(
 }
 
 /**
- * Formats a line of Markdown on the typewriter sheet with both inline Markdown styling
- * AND subtle per-character mechanical ink-pressure variation.
+ * Formats a line of Markdown on the typewriter sheet while strictly preserving 1:1 monospace
+ * column widths. Supports headings, blockquotes, lists, task items, horizontal rules,
+ * bold, italic, strikethrough, and inline code.
  */
 fun formatMonospaceMarkdownLine(
     line: String,
@@ -111,10 +109,10 @@ fun formatMonospaceMarkdownLine(
     val trimmed = line.trimStart()
     val isHeading = trimmed.startsWith("#")
     val isQuote = trimmed.startsWith(">")
+    val isHorizontalRule = trimmed == "---" || trimmed == "***"
 
-    // 1. Apply per-character mechanical ink-pressure & micro-baseline variation first
     val lineBaseColor = when {
-        isHeading -> accentRedColor
+        isHeading || isHorizontalRule -> accentRedColor
         isQuote -> baseInkColor.copy(alpha = 0.82f)
         else -> baseInkColor
     }
@@ -135,8 +133,7 @@ fun formatMonospaceMarkdownLine(
         }
     }
 
-    // 2. Headings (#, ##, ###)
-    if (isHeading) {
+    if (isHeading || isHorizontalRule) {
         addStyle(
             SpanStyle(fontWeight = FontWeight.ExtraBold),
             start = 0,
@@ -145,7 +142,6 @@ fun formatMonospaceMarkdownLine(
         return@buildAnnotatedString
     }
 
-    // 3. Blockquotes (>)
     if (isQuote) {
         addStyle(
             SpanStyle(fontStyle = FontStyle.Italic),
@@ -154,10 +150,18 @@ fun formatMonospaceMarkdownLine(
         )
     }
 
+    // Highlight Markdown list bullets (- , * , 1. , [x]) in red ribbon ink
+    REGEX_LIST_PREFIX.find(line)?.let { match ->
+        addStyle(
+            SpanStyle(color = accentRedColor, fontWeight = FontWeight.ExtraBold),
+            match.range.first,
+            match.range.last + 1
+        )
+    }
+
     val fadedSyntax = SpanStyle(color = baseInkColor.copy(alpha = 0.34f))
 
-    // 4. Bold (**text**)
-    Regex("\\*\\*(.+?)\\*\\*").findAll(line).forEach { match ->
+    REGEX_BOLD.findAll(line).forEach { match ->
         val range = match.range
         addStyle(fadedSyntax, range.first, range.first + 2)
         addStyle(
@@ -168,8 +172,7 @@ fun formatMonospaceMarkdownLine(
         addStyle(fadedSyntax, range.last - 1, range.last + 1)
     }
 
-    // 5. Italic (*text* or _text_)
-    Regex("(?<!\\*)\\*([^*]+)\\*(?!\\*)|_([^_]+)_").findAll(line).forEach { match ->
+    REGEX_ITALIC.findAll(line).forEach { match ->
         val range = match.range
         addStyle(fadedSyntax, range.first, range.first + 1)
         addStyle(
@@ -180,8 +183,7 @@ fun formatMonospaceMarkdownLine(
         addStyle(fadedSyntax, range.last, range.last + 1)
     }
 
-    // 6. Strikethrough (~~text~~)
-    Regex("~~(.+?)~~").findAll(line).forEach { match ->
+    REGEX_STRIKE.findAll(line).forEach { match ->
         val range = match.range
         addStyle(fadedSyntax, range.first, range.first + 2)
         addStyle(
@@ -195,8 +197,7 @@ fun formatMonospaceMarkdownLine(
         addStyle(fadedSyntax, range.last - 1, range.last + 1)
     }
 
-    // 7. Inline Code (`code`)
-    Regex("`([^`]+)`").findAll(line).forEach { match ->
+    REGEX_CODE.findAll(line).forEach { match ->
         val range = match.range
         addStyle(fadedSyntax, range.first, range.first + 1)
         for (idx in (range.first + 1) until range.last) {
@@ -217,6 +218,8 @@ fun formatMonospaceMarkdownLine(
 @Composable
 fun TypewriterHardwareOverlay(
     typeheadCenter: Offset,
+    charWidthPx: Float,
+    lineHeightPx: Float,
     theme: TypewriterThemeMode,
     isRedRibbon: Boolean,
     isHardcoreMode: Boolean,
@@ -235,16 +238,20 @@ fun TypewriterHardwareOverlay(
 ) {
     val strikeProgress = remember { Animatable(0f) }
 
+    // Reusable paths so zero Path allocations happen inside 120Hz onDraw
+    val ribbonPathBlack = remember { Path() }
+    val ribbonPathRed = remember { Path() }
+
     LaunchedEffect(strikeTriggerId) {
         if (strikeTriggerId > 0L) {
             strikeProgress.snapTo(0f)
             strikeProgress.animateTo(
                 targetValue = 1f,
-                animationSpec = tween(durationMillis = 26, easing = FastOutLinearInEasing)
+                animationSpec = tween(durationMillis = 25, easing = FastOutLinearInEasing)
             )
             strikeProgress.animateTo(
                 targetValue = 0f,
-                animationSpec = tween(durationMillis = 52, easing = LinearOutSlowInEasing)
+                animationSpec = tween(durationMillis = 50, easing = LinearOutSlowInEasing)
             )
         }
     }
@@ -254,6 +261,24 @@ fun TypewriterHardwareOverlay(
             val cx = typeheadCenter.x
             val cy = typeheadCenter.y
             val liftOffset = strikeProgress.value * 14f
+
+            // 0. Active Character Typehead Reticle / Alignment Box on the paper
+            val reticleLeft = cx - 1f
+            val reticleTop = cy - (lineHeightPx * 0.72f)
+            drawRoundRect(
+                color = (if (isRedRibbon) theme.accentRibbonRed else theme.hardwareChrome).copy(alpha = 0.35f),
+                topLeft = Offset(reticleLeft, reticleTop),
+                size = Size(charWidthPx + 2f, lineHeightPx * 0.85f),
+                cornerRadius = CornerRadius(2f, 2f),
+                style = Stroke(width = 1.5f)
+            )
+            // Subtle bottom caret underline inside the active cell
+            drawLine(
+                color = if (isRedRibbon) theme.accentRibbonRed else theme.inkColor.copy(alpha = 0.65f),
+                start = Offset(reticleLeft + 1f, reticleTop + lineHeightPx * 0.82f),
+                end = Offset(reticleLeft + charWidthPx + 1f, reticleTop + lineHeightPx * 0.82f),
+                strokeWidth = 2.5f
+            )
 
             // 1. Horizontal Paper Bail / Platen Pressure Bar with Inch Scale
             val bailY = cy - 52f
@@ -267,10 +292,11 @@ fun TypewriterHardwareOverlay(
                 topLeft = Offset(0f, bailY + 8f),
                 size = Size(size.width, 4f)
             )
-            val tickStep = 24f
+            val tickStep = charWidthPx.coerceAtLeast(16f)
             var tickX = cx % tickStep
+            var tickIdx = 0
             while (tickX < size.width) {
-                val isMajor = (((tickX - cx) / tickStep).toInt() % 5 == 0)
+                val isMajor = (tickIdx % 5 == 0)
                 drawLine(
                     color = theme.hardwareBody,
                     start = Offset(tickX, bailY),
@@ -278,6 +304,7 @@ fun TypewriterHardwareOverlay(
                     strokeWidth = if (isMajor) 2f else 1f
                 )
                 tickX += tickStep
+                tickIdx++
             }
 
             // 2. Lower Typewriter Body / Mechanical Deck Housing
@@ -286,7 +313,7 @@ fun TypewriterHardwareOverlay(
                 brush = Brush.verticalGradient(
                     colors = listOf(
                         theme.hardwareBody,
-                        Color(0xFF0B0C0E)
+                        Color(0xFF090A0C)
                     ),
                     startY = bodyTopY,
                     endY = size.height
@@ -306,9 +333,10 @@ fun TypewriterHardwareOverlay(
             val rightSpoolCenter = Offset(size.width * 0.84f, bodyTopY + (size.height - bodyTopY) * 0.48f)
             val spoolRadius = ((size.height - bodyTopY) * 0.36f).coerceIn(44f, 78f)
 
-            // 3. Bichrome Ink Ribbon feeding from Left Spool -> Typehead Vibrator -> Right Spool
+            // 3. Bichrome Ink Ribbon (reusing cached Path instances)
             val ribbonBaseY = cy + 16f - liftOffset
-            val ribbonPathBlack = Path().apply {
+            ribbonPathBlack.reset()
+            ribbonPathBlack.apply {
                 moveTo(leftSpoolCenter.x, leftSpoolCenter.y - spoolRadius * 0.6f)
                 quadraticBezierTo(cx - 240f, ribbonBaseY + 10f, cx - 28f, ribbonBaseY)
                 lineTo(cx + 28f, ribbonBaseY)
@@ -320,7 +348,8 @@ fun TypewriterHardwareOverlay(
                 style = Stroke(width = 16f, cap = StrokeCap.Round)
             )
 
-            val ribbonPathRed = Path().apply {
+            ribbonPathRed.reset()
+            ribbonPathRed.apply {
                 moveTo(leftSpoolCenter.x, leftSpoolCenter.y - spoolRadius * 0.6f + 12f)
                 quadraticBezierTo(cx - 240f, ribbonBaseY + 22f, cx - 28f, ribbonBaseY + 12f)
                 lineTo(cx + 28f, ribbonBaseY + 12f)
@@ -458,7 +487,6 @@ fun TypewriterHardwareOverlay(
                 )
             }
 
-            // Center Vintage Brass Nameplate with Page Counter & Line Odometer
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -637,27 +665,39 @@ private fun DrawScope.drawBrassTorchFixture(cx: Float, lampY: Float) {
 @Composable
 fun TwilightTorchOverlay(
     typeheadCenter: Offset,
+    strikeTriggerId: Long,
     modifier: Modifier = Modifier
 ) {
     var flickerIntensity by remember { mutableFloatStateOf(1f) }
     var beamSwayX by remember { mutableFloatStateOf(0f) }
+    val conePath = remember { Path() }
+
+    // Subtle mechanical power-dip when a key strikes
+    var strikeDip by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(strikeTriggerId) {
+        if (strikeTriggerId > 0L) {
+            strikeDip = 0.045f
+            kotlinx.coroutines.delay(45L)
+            strikeDip = 0f
+        }
+    }
 
     LaunchedEffect(Unit) {
         var nextGlitchTime = 0L
         while (true) {
             withFrameMillis { frameMs ->
                 val t = frameMs / 1000.0
-                val slowWave = (sin(t * 2.7) * 0.03 + sin(t * 6.3) * 0.02).toFloat()
+                val slowWave = (sin(t * 2.7) * 0.028 + sin(t * 6.3) * 0.018).toFloat()
 
                 val glitchDip = if (frameMs > nextGlitchTime) {
-                    if (Random.nextFloat() < 0.035f) {
-                        nextGlitchTime = frameMs + Random.nextLong(1400L, 4500L)
-                        -Random.nextFloat() * 0.28f
+                    if (Random.nextFloat() < 0.032f) {
+                        nextGlitchTime = frameMs + Random.nextLong(1600L, 4800L)
+                        -Random.nextFloat() * 0.26f
                     } else 0f
                 } else 0f
 
-                flickerIntensity = (0.94f + slowWave + glitchDip).coerceIn(0.62f, 1.0f)
-                beamSwayX = (sin(t * 1.9) * 8.0).toFloat()
+                flickerIntensity = (0.95f + slowWave + glitchDip - strikeDip).coerceIn(0.62f, 1.0f)
+                beamSwayX = (sin(t * 1.8) * 7.5).toFloat()
             }
         }
     }
@@ -674,7 +714,8 @@ fun TwilightTorchOverlay(
             size = size
         )
 
-        val conePath = Path().apply {
+        conePath.reset()
+        conePath.apply {
             moveTo(origin.x - 24f, origin.y)
             lineTo(origin.x + 24f, origin.y)
             lineTo(origin.x + size.width * 0.48f + beamSwayX, 0f)
@@ -717,8 +758,8 @@ fun TwilightTorchOverlay(
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    Color(0x38FFB74D).copy(alpha = 0.22f * flickerIntensity),
-                    Color(0x1FFFA726).copy(alpha = 0.12f * flickerIntensity),
+                    Color(0x38FFB74D).copy(alpha = 0.24f * flickerIntensity),
+                    Color(0x1FFFA726).copy(alpha = 0.13f * flickerIntensity),
                     Color.Transparent
                 ),
                 center = Offset(typeheadCenter.x, typeheadCenter.y - 90f),
