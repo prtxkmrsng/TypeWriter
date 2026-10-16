@@ -11,11 +11,18 @@ import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
 
 data class MarkdownDocument(
     val uri: Uri,
     val name: String,
     val lastModified: Long
+)
+
+data class ExportedFileResult(
+    val fileName: String,
+    val uri: Uri,
+    val mimeType: String
 )
 
 class DocumentRepository(private val context: Context) {
@@ -125,7 +132,7 @@ class DocumentRepository(private val context: Context) {
         documentName: String,
         lines: List<String>,
         linesPerPage: Int = 55
-    ): String? = withContext(Dispatchers.IO) {
+    ): ExportedFileResult? = withContext(Dispatchers.IO) {
         try {
             val root = DocumentFile.fromTreeUri(context, folderUri) ?: return@withContext null
             val baseName = documentName.removeSuffix(".md").removeSuffix(".MD").ifBlank { "Manuscript" }
@@ -140,7 +147,8 @@ class DocumentRepository(private val context: Context) {
                 appendLine("<html lang=\"en\"><head><meta charset=\"UTF-8\">")
                 appendLine("<title>${escapeHtml(baseName)}</title>")
                 appendLine("<style>")
-                appendLine("""
+                appendLine(
+                    """
                     body {
                         background: #23221F;
                         margin: 0;
@@ -191,11 +199,18 @@ class DocumentRepository(private val context: Context) {
                         padding: 1px 4px;
                         border-radius: 3px;
                     }
+                    .footer-sig {
+                        margin-top: 28px;
+                        font-size: 10px;
+                        color: #9A9386;
+                        text-align: right;
+                    }
                     @media print {
                         body { background: none; padding: 0; }
                         .sheet { box-shadow: none; margin: 0; width: 100%; }
                     }
-                """.trimIndent())
+                    """.trimIndent()
+                )
                 appendLine("</style></head><body>")
 
                 pages.forEachIndexed { pageIdx, pageLines ->
@@ -216,6 +231,7 @@ class DocumentRepository(private val context: Context) {
                                 appendLine("<div class=\"line\">${formatInlineHtml(rawLine)}</div>")
                         }
                     }
+                    appendLine("<div class=\"footer-sig\">TYPED ON TYPEWRITER • @prtxkmrsng</div>")
                     appendLine("</div>")
                 }
 
@@ -225,21 +241,26 @@ class DocumentRepository(private val context: Context) {
             context.contentResolver.openOutputStream(htmlFile.uri, "wt")?.bufferedWriter()?.use {
                 it.write(htmlContent)
             }
-            htmlFileName
+            ExportedFileResult(
+                fileName = htmlFileName,
+                uri = htmlFile.uri,
+                mimeType = "text/html"
+            )
         } catch (e: Exception) {
             null
         }
     }
 
     /**
-     * Exports the current manuscript as a paginated PDF (55 lines per page) using Android's PdfDocument.
+     * Exports the current manuscript as a paginated PDF (55 lines per page) with subtle mechanical
+     * ink-pressure variation per character.
      */
     suspend fun exportToPdf(
         folderUri: Uri,
         documentName: String,
         lines: List<String>,
         linesPerPage: Int = 55
-    ): String? = withContext(Dispatchers.IO) {
+    ): ExportedFileResult? = withContext(Dispatchers.IO) {
         val pdfDocument = PdfDocument()
         try {
             val root = DocumentFile.fromTreeUri(context, folderUri) ?: return@withContext null
@@ -249,8 +270,8 @@ class DocumentRepository(private val context: Context) {
             root.findFile(pdfFileName)?.delete()
             val pdfFile = root.createFile("application/pdf", pdfFileName) ?: return@withContext null
 
-            val pageWidth = 612 // Standard Letter width in PostScript points
-            val pageHeight = 792 // Standard Letter height in PostScript points
+            val pageWidth = 612
+            val pageHeight = 792
             val leftMargin = 58f
             val topMargin = 56f
             val lineHeight = 12.2f
@@ -284,6 +305,7 @@ class DocumentRepository(private val context: Context) {
                 color = Color.rgb(75, 70, 62)
             }
 
+            val charAdvance = bodyPaint.measureText("M")
             val pages = lines.chunked(linesPerPage).ifEmpty { listOf(listOf("")) }
 
             pages.forEachIndexed { pageIndex, pageLines ->
@@ -291,28 +313,16 @@ class DocumentRepository(private val context: Context) {
                 val page = pdfDocument.startPage(pageInfo)
                 val canvas: Canvas = page.canvas
 
-                // Paper background & left red margin line
                 canvas.drawRect(0f, 0f, pageWidth.toFloat(), pageHeight.toFloat(), paperPaint)
                 canvas.drawLine(leftMargin - 12f, 0f, leftMargin - 12f, pageHeight.toFloat(), marginRulePaint)
 
-                // Top header with manuscript title & page number
-                canvas.drawText(
-                    baseName.uppercase(),
-                    leftMargin,
-                    34f,
-                    headerPaint
-                )
+                canvas.drawText(baseName.uppercase(), leftMargin, 34f, headerPaint)
                 val pageLabel = "PAGE ${pageIndex + 1} OF ${pages.size}"
                 val labelWidth = headerPaint.measureText(pageLabel)
-                canvas.drawText(
-                    pageLabel,
-                    pageWidth - leftMargin - labelWidth,
-                    34f,
-                    headerPaint
-                )
+                canvas.drawText(pageLabel, pageWidth - leftMargin - labelWidth, 34f, headerPaint)
 
-                // Render up to 55 lines on this page
                 pageLines.forEachIndexed { lineIdx, rawLine ->
+                    val globalLineIdx = pageIndex * linesPerPage + lineIdx
                     val y = topMargin + (lineIdx + 1) * lineHeight
                     val trimmed = rawLine.trimStart()
                     val cleanText = stripMarkdownTokens(rawLine)
@@ -325,7 +335,22 @@ class DocumentRepository(private val context: Context) {
                             canvas.drawText(cleanText.removePrefix(">").trimStart(), leftMargin + 10f, y, quotePaint)
                         }
                         else -> {
-                            canvas.drawText(cleanText, leftMargin, y, bodyPaint)
+                            // Draw character by character with subtle mechanical ink-pressure alpha & micro-jitter
+                            cleanText.forEachIndexed { colIdx, ch ->
+                                if (ch != ' ') {
+                                    val hash = abs(globalLineIdx * 131 + colIdx * 37 + ch.code * 17)
+                                    val alpha = 195 + (hash % 61) // 195..255 ink pressure
+                                    val yJitter = ((hash % 5) - 2) * 0.14f
+                                    bodyPaint.alpha = alpha
+                                    canvas.drawText(
+                                        ch.toString(),
+                                        leftMargin + colIdx * charAdvance,
+                                        y + yJitter,
+                                        bodyPaint
+                                    )
+                                }
+                            }
+                            bodyPaint.alpha = 255
                         }
                     }
                 }
@@ -336,7 +361,11 @@ class DocumentRepository(private val context: Context) {
             context.contentResolver.openOutputStream(pdfFile.uri, "w")?.use { out ->
                 pdfDocument.writeTo(out)
             }
-            pdfFileName
+            ExportedFileResult(
+                fileName = pdfFileName,
+                uri = pdfFile.uri,
+                mimeType = "application/pdf"
+            )
         } catch (e: Exception) {
             null
         } finally {
