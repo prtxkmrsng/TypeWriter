@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.prtxkmrsng.typewriter.audio.TypewriterSoundEngine
 import com.prtxkmrsng.typewriter.data.DocumentRepository
+import com.prtxkmrsng.typewriter.data.ExportedFileResult
 import com.prtxkmrsng.typewriter.data.MarkdownDocument
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -39,7 +40,8 @@ data class TypewriterUiState(
     val lastStruckChar: Char = ' ',
     val wordCount: Int = 0,
     val charCount: Int = 0,
-    val exportStatusMessage: String? = null
+    val exportStatusMessage: String? = null,
+    val lastExportedFile: ExportedFileResult? = null
 )
 
 class TypewriterViewModel(application: Application) : AndroidViewModel(application) {
@@ -125,7 +127,8 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
                     saveStatus = SaveStatus.SAVED,
                     wordCount = countWords(parsedLines),
                     charCount = parsedLines.sumOf { line -> line.length },
-                    exportStatusMessage = null
+                    exportStatusMessage = null,
+                    lastExportedFile = null
                 )
             }
             soundEngine.playCarriageReturn()
@@ -165,14 +168,14 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.update { it.copy(isMuted = nextMute) }
     }
 
-    fun exportManuscriptAsPdf() {
+    fun exportManuscriptAsPdf(onShareReady: ((ExportedFileResult) -> Unit)? = null) {
         val state = _uiState.value
         val folderUri = state.folderUri ?: return
         val docName = state.activeDocument?.name ?: "Manuscript.md"
 
         viewModelScope.launch {
             _uiState.update { it.copy(exportStatusMessage = "PRINTING PDF...") }
-            val savedName = repository.exportToPdf(
+            val result = repository.exportToPdf(
                 folderUri = folderUri,
                 documentName = docName,
                 lines = state.lines,
@@ -181,24 +184,28 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
             soundEngine.playMarginBell()
             _uiState.update {
                 it.copy(
-                    exportStatusMessage = if (savedName != null) {
-                        "SAVED $savedName TO MANUSCRIPT FOLDER"
+                    lastExportedFile = result,
+                    exportStatusMessage = if (result != null) {
+                        "SAVED ${result.fileName} TO MANUSCRIPT FOLDER"
                     } else {
                         "PDF EXPORT FAILED"
                     }
                 )
             }
+            if (result != null && onShareReady != null) {
+                onShareReady(result)
+            }
         }
     }
 
-    fun exportManuscriptAsHtml() {
+    fun exportManuscriptAsHtml(onShareReady: ((ExportedFileResult) -> Unit)? = null) {
         val state = _uiState.value
         val folderUri = state.folderUri ?: return
         val docName = state.activeDocument?.name ?: "Manuscript.md"
 
         viewModelScope.launch {
             _uiState.update { it.copy(exportStatusMessage = "GENERATING HTML...") }
-            val savedName = repository.exportToHtml(
+            val result = repository.exportToHtml(
                 folderUri = folderUri,
                 documentName = docName,
                 lines = state.lines,
@@ -207,13 +214,31 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
             soundEngine.playMarginBell()
             _uiState.update {
                 it.copy(
-                    exportStatusMessage = if (savedName != null) {
-                        "SAVED $savedName TO MANUSCRIPT FOLDER"
+                    lastExportedFile = result,
+                    exportStatusMessage = if (result != null) {
+                        "SAVED ${result.fileName} TO MANUSCRIPT FOLDER"
                     } else {
                         "HTML EXPORT FAILED"
                     }
                 )
             }
+            if (result != null && onShareReady != null) {
+                onShareReady(result)
+            }
+        }
+    }
+
+    fun shareActiveMarkdown(onShareReady: (ExportedFileResult) -> Unit) {
+        val doc = _uiState.value.activeDocument ?: return
+        viewModelScope.launch {
+            saveCurrentImmediately()
+            onShareReady(
+                ExportedFileResult(
+                    fileName = doc.name,
+                    uri = doc.uri,
+                    mimeType = "text/markdown"
+                )
+            )
         }
     }
 
