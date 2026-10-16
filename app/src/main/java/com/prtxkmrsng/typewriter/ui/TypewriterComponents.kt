@@ -37,10 +37,6 @@ import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.random.Random
 
-/**
- * Formats a single line of Markdown for the typewriter page while strictly preserving
- * 1:1 monospace character column positions (syntax characters are dimmed rather than removed).
- */
 fun formatMonospaceMarkdownLine(
     line: String,
     baseInkColor: Color,
@@ -49,7 +45,6 @@ fun formatMonospaceMarkdownLine(
     append(line)
     val trimmed = line.trimStart()
 
-    // 1. Headings (#, ##, ###)
     if (trimmed.startsWith("#")) {
         addStyle(
             SpanStyle(
@@ -62,7 +57,6 @@ fun formatMonospaceMarkdownLine(
         return@buildAnnotatedString
     }
 
-    // 2. Blockquotes (>)
     if (trimmed.startsWith(">")) {
         addStyle(
             SpanStyle(
@@ -76,7 +70,6 @@ fun formatMonospaceMarkdownLine(
 
     val fadedSyntax = SpanStyle(color = baseInkColor.copy(alpha = 0.35f))
 
-    // 3. Bold (**text**)
     Regex("\\*\\*(.+?)\\*\\*").findAll(line).forEach { match ->
         val range = match.range
         addStyle(fadedSyntax, range.first, range.first + 2)
@@ -88,7 +81,6 @@ fun formatMonospaceMarkdownLine(
         addStyle(fadedSyntax, range.last - 1, range.last + 1)
     }
 
-    // 4. Italic (*text* or _text_)
     Regex("(?<!\\*)\\*([^*]+)\\*(?!\\*)|_([^_]+)_").findAll(line).forEach { match ->
         val range = match.range
         addStyle(fadedSyntax, range.first, range.first + 1)
@@ -100,7 +92,6 @@ fun formatMonospaceMarkdownLine(
         addStyle(fadedSyntax, range.last, range.last + 1)
     }
 
-    // 5. Strikethrough (~~text~~)
     Regex("~~(.+?)~~").findAll(line).forEach { match ->
         val range = match.range
         addStyle(fadedSyntax, range.first, range.first + 2)
@@ -112,7 +103,6 @@ fun formatMonospaceMarkdownLine(
         addStyle(fadedSyntax, range.last - 1, range.last + 1)
     }
 
-    // 6. Inline Code (`code`)
     Regex("`([^`]+)`").findAll(line).forEach { match ->
         val range = match.range
         addStyle(fadedSyntax, range.first, range.first + 1)
@@ -129,10 +119,6 @@ fun formatMonospaceMarkdownLine(
     }
 }
 
-/**
- * Renders the Typewriter Ribbon, Card Guide, Platen Roller Bar, striking Typehead,
- * Rotating Left/Right Ink Spools, and Interactive Mechanical Deck below the ribbon.
- */
 @Composable
 fun TypewriterHardwareOverlay(
     typeheadCenter: Offset,
@@ -141,7 +127,10 @@ fun TypewriterHardwareOverlay(
     isHardcoreMode: Boolean,
     strikeTriggerId: Long,
     ribbonSpoolAngle: Float,
-    cursorLine: Int,
+    currentPage: Int,
+    totalPages: Int,
+    lineInPage: Int,
+    linesPerPage: Int,
     cursorCol: Int,
     charCount: Int,
     onToggleRibbon: () -> Unit,
@@ -196,7 +185,7 @@ fun TypewriterHardwareOverlay(
                 tickX += tickStep
             }
 
-            // 2. Lower Typewriter Body / Mechanical Deck Housing (starts right below the ribbon)
+            // 2. Lower Typewriter Body / Mechanical Deck Housing
             val bodyTopY = cy + 62f
             drawRect(
                 brush = Brush.verticalGradient(
@@ -211,7 +200,6 @@ fun TypewriterHardwareOverlay(
                 size = Size(size.width, size.height - bodyTopY)
             )
 
-            // Brushed chrome bevel along the top edge of the lower deck
             drawLine(
                 color = theme.hardwareChrome.copy(alpha = 0.78f),
                 start = Offset(0f, bodyTopY),
@@ -249,7 +237,7 @@ fun TypewriterHardwareOverlay(
                 style = Stroke(width = 11f, cap = StrokeCap.Round)
             )
 
-            // 4. Left & Right Rotating Ribbon Spools inside recessed deck wells
+            // 4. Left & Right Rotating Ribbon Spools
             drawRibbonSpool(
                 center = leftSpoolCenter,
                 radius = spoolRadius,
@@ -265,7 +253,7 @@ fun TypewriterHardwareOverlay(
                 accentRed = theme.accentRibbonRed
             )
 
-            // 5. Metallic Type Guide & Ribbon Vibrator Forks around the active character
+            // 5. Metallic Type Guide & Ribbon Vibrator Forks
             drawRoundRect(
                 color = theme.hardwareChrome,
                 topLeft = Offset(cx - 32f, cy - 18f - liftOffset * 0.4f),
@@ -278,7 +266,6 @@ fun TypewriterHardwareOverlay(
                 size = Size(10f, 54f),
                 cornerRadius = CornerRadius(3f, 3f)
             )
-            // Red/Chrome V-notch alignment guide directly under the active character
             drawLine(
                 color = if (isRedRibbon) theme.accentRibbonRed else theme.hardwareChrome,
                 start = Offset(cx - 10f, cy + 14f),
@@ -313,7 +300,6 @@ fun TypewriterHardwareOverlay(
                 style = Stroke(width = 4f)
             )
 
-            // Radial fan of resting typebars in the segment comb
             for (angleIndex in -11..11) {
                 val spreadX = cx + angleIndex * (basketWidth / 26f)
                 drawLine(
@@ -342,20 +328,18 @@ fun TypewriterHardwareOverlay(
                 cornerRadius = CornerRadius(4f, 4f)
             )
 
-            // 8. If in Twilight Mode, draw the Brass Clip-On Lamp Fixture mounted at the typehead
             if (theme.isTwilight) {
                 drawBrassTorchFixture(cx, cy + 38f)
             }
         }
 
-        // 9. Interactive Mechanical Deck Controls & Odometer Plate along the bottom edge
+        // 8. Interactive Mechanical Deck Controls & Page/Line Odometer Plate
         Box(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .padding(horizontal = 28.dp, vertical = 12.dp)
         ) {
-            // Left Mechanical Control: Carriage Return Lever + Hardcore Overstrike Switch
             Row(
                 modifier = Modifier.align(Alignment.BottomStart),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -379,7 +363,7 @@ fun TypewriterHardwareOverlay(
                 )
             }
 
-            // Center Vintage Brass Nameplate & Odometer
+            // Center Vintage Brass Nameplate with Page Counter & Line Odometer
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -389,22 +373,21 @@ fun TypewriterHardwareOverlay(
                 tonalElevation = 6.dp
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     Text(
-                        text = "L:${(cursorLine + 1).toString().padStart(3, '0')}",
+                        text = "PAGE ${currentPage.toString().padStart(2, '0')}/${totalPages.toString().padStart(2, '0')}",
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.Bold,
                         fontSize = 12.sp,
                         color = Color(0xFFE6C891)
                     )
                     Text(
-                        text = "• ROYAL STANDARD •",
+                        text = "• L:${lineInPage.toString().padStart(2, '0')}/$linesPerPage •",
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.ExtraBold,
-                        letterSpacing = 2.sp,
                         fontSize = 12.sp,
                         color = Color(0xFFC5A367)
                     )
@@ -418,7 +401,6 @@ fun TypewriterHardwareOverlay(
                 }
             }
 
-            // Right Mechanical Control: Bichrome Ribbon Color Selector Switch
             Row(
                 modifier = Modifier.align(Alignment.BottomEnd),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -492,13 +474,11 @@ private fun DrawScope.drawRibbonSpool(
     chromeColor: Color,
     accentRed: Color
 ) {
-    // Recessed shadow well in the typewriter deck
     drawCircle(
         color = Color(0xFF070809),
         radius = radius + 8f,
         center = center
     )
-    // Wound ink ribbon bulk inside the spool
     drawCircle(
         color = Color(0xFF1D1E22),
         radius = radius * 0.82f,
@@ -510,7 +490,6 @@ private fun DrawScope.drawRibbonSpool(
         center = center,
         style = Stroke(width = 4f)
     )
-    // Outer metallic spool rim
     drawCircle(
         color = chromeColor.copy(alpha = 0.75f),
         radius = radius,
@@ -518,7 +497,6 @@ private fun DrawScope.drawRibbonSpool(
         style = Stroke(width = 4.5f)
     )
 
-    // Rotating 3-spoke vintage metal reel
     rotate(degrees = angle, pivot = center) {
         for (i in 0 until 3) {
             val rad = Math.toRadians((i * 120.0))
@@ -534,7 +512,6 @@ private fun DrawScope.drawRibbonSpool(
         }
     }
 
-    // Center brass thumb-nut
     drawCircle(
         color = Color(0xFFB5945B),
         radius = radius * 0.22f,
@@ -562,9 +539,6 @@ private fun DrawScope.drawBrassTorchFixture(cx: Float, lampY: Float) {
     )
 }
 
-/**
- * Twilight Mode Torchlight Overlay
- */
 @Composable
 fun TwilightTorchOverlay(
     typeheadCenter: Offset,
