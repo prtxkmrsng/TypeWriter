@@ -1,0 +1,38 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Key cap outer ring -->
+    <path
+        android:fillColor="#000000"
+        android:pathData="M54,54m-24,0a24,24,0,1,1,48,0a24,24,0,1,1,-48,0" />
+
+    <!-- Key cap inner well (cut out) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,54m-20.5,0a20.5,20.5,0,1,1,41,0a20.5,20.5,0,1,1,-41,0" />
+
+    <!-- Dark face re-fill -->
+    <path
+        android:fillColor="#000000"
+        android:pathData="M54,54m-19.5,0a19.5,19.5,0,1,1,39,0a19.5,19.5,0,1,1,-39,0" />
+
+    <!-- Letter T — cut out / white -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="
+            M42,40 L66,40 L66,44.5 L56,44.5 L56,67 L52,67 L52,44.5 L42,44.5 Z
+        " />
+
+    <!-- Key stem -->
+    <path
+        android:fillColor="#000000"
+        android:pathData="M52.5,78 L55.5,78 L55.5,82 Q54,84,52.5,82 Z" />
+
+    <!-- Stem arm -->
+    <path
+        android:fillColor="#000000"
+        android:pathData="M53,73.5 L55,73.5 L55,78 L53,78 Z" />
+</vector>
