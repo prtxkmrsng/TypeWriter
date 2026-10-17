@@ -7,6 +7,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -23,7 +24,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -53,7 +53,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -61,7 +60,6 @@ import com.prtxkmrsng.typewriter.data.ExportedFileResult
 import com.prtxkmrsng.typewriter.data.MarkdownDocument
 import kotlinx.coroutines.delay
 import kotlin.math.floor
-import kotlin.math.roundToInt
 
 private fun shareExportedManuscript(context: Context, exported: ExportedFileResult) {
     val shareIntent = Intent(Intent.ACTION_SEND).apply {
@@ -196,7 +194,6 @@ private fun TypewriterWorkspace(
     var docToRename by remember { mutableStateOf<MarkdownDocument?>(null) }
     var showDeveloperInfoDialog by remember { mutableStateOf(false) }
 
-    // Distraction-free HUD auto-dimming while actively typing
     var isActivelyTyping by remember { mutableStateOf(false) }
     LaunchedEffect(state.strikeTriggerId) {
         if (state.strikeTriggerId > 0L) {
@@ -211,15 +208,21 @@ private fun TypewriterWorkspace(
         label = "HudAlpha"
     )
 
-    val textMeasurer = rememberTextMeasurer()
+    val textMeasurer = rememberTextMeasurer(cacheSize = 256)
     val density = LocalDensity.current
-    val charSampleLayout = remember(density) {
-        textMeasurer.measure(
-            text = "M",
-            style = TypewriterTypography.bodyMonospace
+
+    // Subpixel-accurate character width measured across 100 monospace characters
+    val charWidthPx = remember(density, density.density, density.fontScale) {
+        val sampleCount = 100
+        val layout = textMeasurer.measure(
+            text = "M".repeat(sampleCount),
+            style = TypewriterTypography.bodyMonospace,
+            softWrap = false,
+            maxLines = 1
         )
+        (layout.size.width.toFloat() / sampleCount).coerceAtLeast(8f)
     }
-    val charWidthPx = charSampleLayout.size.width.toFloat().coerceAtLeast(12f)
+
     val lineHeightPx = with(density) { 32.dp.toPx() }
     val paperHorizontalPaddingPx = with(density) { 64.dp.toPx() }
     val textAreaWidthPx = state.maxCharsPerLine * charWidthPx
@@ -248,23 +251,59 @@ private fun TypewriterWorkspace(
         )
     }
 
-    val targetPaperLeftX = typeheadCenter.x - paperHorizontalPaddingPx - (state.cursorCol * charWidthPx)
-    val targetPaperTopY = typeheadCenter.y - lineYInPaperRoll(state.cursorLine) - (lineHeightPx * 0.78f)
+    val activeInk = if (state.isRedRibbon) theme.accentRibbonRed else theme.inkColor
+    val currentLineText = state.lines.getOrNull(state.cursorLine).orEmpty()
 
+    // Exact pixel width of the characters preceding cursorCol on the active line,
+    // measured with the exact same styled AnnotatedString used to draw the line.
+    val activePrefixWidthPx = remember(
+        state.cursorLine,
+        state.cursorCol,
+        currentLineText,
+        activeInk,
+        theme.accentRibbonRed,
+        density.density,
+        density.fontScale
+    ) {
+        val safeCol = state.cursorCol.coerceIn(0, currentLineText.length)
+        if (safeCol == 0) {
+            0f
+        } else {
+            val fullStyled = formatMonospaceMarkdownLine(
+                line = currentLineText,
+                lineIndex = state.cursorLine,
+                baseInkColor = activeInk,
+                accentRedColor = theme.accentRibbonRed
+            )
+            val prefixAnnotated = fullStyled.subSequence(0, safeCol)
+            textMeasurer.measure(
+                text = prefixAnnotated,
+                style = TypewriterTypography.bodyMonospace,
+                softWrap = false,
+                maxLines = 1
+            ).size.width.toFloat()
+        }
+    }
+
+    val targetPaperLeftX = typeheadCenter.x - paperHorizontalPaddingPx - activePrefixWidthPx
+    val targetPaperTopY = typeheadCenter.y - lineYInPaperRoll(state.cursorLine) - (lineHeightPx * 0.75f)
+
+    // Instantaneous 25ms escapement step when typing characters; smooth slide on Carriage Return
     val animatedPaperX by animateFloatAsState(
         targetValue = targetPaperLeftX,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessHigh
-        ),
+        animationSpec = if (state.cursorCol == 0) {
+            tween(durationMillis = 160, easing = FastOutSlowInEasing)
+        } else {
+            tween(durationMillis = 25, easing = FastOutSlowInEasing)
+        },
         label = "CarriageX"
     )
 
     val animatedPaperY by animateFloatAsState(
         targetValue = targetPaperTopY,
         animationSpec = spring(
-            dampingRatio = Spring.DampingRatioLowBouncy,
-            stiffness = Spring.StiffnessMediumLow
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMedium
         ),
         label = "PlatenRollY"
     )
@@ -290,7 +329,6 @@ private fun TypewriterWorkspace(
                     return@onPreviewKeyEvent true
                 }
 
-                // Hardware Keyboard Shortcuts (Ctrl + Key)
                 if (event.isCtrlPressed) {
                     when (event.key) {
                         Key.S -> {
@@ -401,7 +439,7 @@ private fun TypewriterWorkspace(
                 focusRequester.requestFocus()
             }
     ) {
-        // 1. UNBOUNDED CONTINUOUS FANFOLD PAPER ROLL WITH 55-LINE PERFORATIONS & PLATEN SHADING
+        // 1 & 2. UNIFIED PAPER ROLL + DIRECT CANVAS TEXT RENDERER (Zero Box/Constraint Drift)
         val perforationDash = remember {
             PathEffect.dashPathEffect(floatArrayOf(12f, 8f), 0f)
         }
@@ -420,25 +458,23 @@ private fun TypewriterWorkspace(
             val lastVisiblePage = floor((size.height - animatedPaperY + 120f) / pageStridePx).toInt()
                 .coerceAtMost(pagesToDraw - 1)
 
+            // A. Draw Perforated Paper Sheets
             for (pageIdx in firstVisiblePage..lastVisiblePage) {
                 val pageTopY = animatedPaperY + (pageIdx * pageStridePx)
                 val pageBottomY = pageTopY + pageStridePx
 
-                // Drop shadow on desk
                 drawRect(
                     color = theme.paperShadow,
                     topLeft = Offset(animatedPaperX + 14f, pageTopY + 14f),
                     size = Size(paperWidthPx, pageStridePx)
                 )
 
-                // Main page sheet
                 drawRect(
                     color = theme.paperBackground,
                     topLeft = Offset(animatedPaperX, pageTopY),
                     size = Size(paperWidthPx, pageStridePx)
                 )
 
-                // Subtle 3D cylindrical platen shadow near the top & bottom of each page
                 drawRect(
                     brush = Brush.verticalGradient(
                         colors = listOf(
@@ -452,7 +488,6 @@ private fun TypewriterWorkspace(
                     size = Size(paperWidthPx, pageHeaderPx)
                 )
 
-                // Left red margin line
                 val leftMarginX = animatedPaperX + paperHorizontalPaddingPx - 14f
                 drawLine(
                     color = theme.marginLineColor,
@@ -461,7 +496,6 @@ private fun TypewriterWorkspace(
                     strokeWidth = 2f
                 )
 
-                // Right bell warning margin line
                 val bellLineX = animatedPaperX + paperHorizontalPaddingPx + (state.bellWarningCol * charWidthPx)
                 drawLine(
                     color = theme.marginLineColor.copy(alpha = 0.14f),
@@ -470,7 +504,6 @@ private fun TypewriterWorkspace(
                     strokeWidth = 1.5f
                 )
 
-                // Top-right Page Stamp
                 val stampLayout = textMeasurer.measure(
                     text = "PAGE ${(pageIdx + 1).toString().padStart(2, '0')} OF ${totalPages.toString().padStart(2, '0')}",
                     style = pageStampStyle
@@ -483,7 +516,6 @@ private fun TypewriterWorkspace(
                     )
                 )
 
-                // Bottom Page-Break Perforation Seam (every 55 lines)
                 drawLine(
                     color = Color.Black.copy(alpha = 0.16f),
                     start = Offset(animatedPaperX, pageBottomY),
@@ -508,84 +540,68 @@ private fun TypewriterWorkspace(
                     center = Offset(animatedPaperX + paperWidthPx, pageBottomY)
                 )
             }
-        }
 
-        // 2. O(1) CULLED LINE RENDERER WITH ORGANIC INK-PRESSURE & O(1) OVERSTRIKE LOOKUP
-        val activeInk = if (state.isRedRibbon) theme.accentRibbonRed else theme.inkColor
-        val textAreaWidthDp = with(density) { (textAreaWidthPx + charWidthPx * 4f).toDp() }
-        val lineHeightDp = with(density) { lineHeightPx.toDp() }
-        val textStartScreenX = (animatedPaperX + paperHorizontalPaddingPx).roundToInt()
+            // B. Draw Visible Markdown Lines & Hardcore Overstrikes Directly on the Paper Canvas
+            val textStartX = animatedPaperX + paperHorizontalPaddingPx
+            val approxFirstPage = floor((-animatedPaperY - lineHeightPx * 3f) / pageStridePx).toInt().coerceAtLeast(0)
+            val approxLastPage = floor((size.height - animatedPaperY + lineHeightPx * 3f) / pageStridePx).toInt().coerceAtLeast(0)
+            val firstCandidateLine = (approxFirstPage * linesPerPage).coerceIn(0, state.lines.lastIndex)
+            val lastCandidateLine = ((approxLastPage + 1) * linesPerPage - 1).coerceIn(0, state.lines.lastIndex)
 
-        // Compute visible line range in O(1) time instead of looping through all lines
-        val approxFirstPage = floor((-animatedPaperY - lineHeightPx * 3f) / pageStridePx).toInt().coerceAtLeast(0)
-        val approxLastPage = floor((viewportSize.height - animatedPaperY + lineHeightPx * 3f) / pageStridePx).toInt().coerceAtLeast(0)
-        val firstCandidateLine = (approxFirstPage * linesPerPage).coerceIn(0, state.lines.lastIndex)
-        val lastCandidateLine = ((approxLastPage + 1) * linesPerPage - 1).coerceIn(0, state.lines.lastIndex)
-
-        Box(modifier = Modifier.fillMaxSize()) {
             for (lineIdx in firstCandidateLine..lastCandidateLine) {
                 val screenY = animatedPaperY + lineYInPaperRoll(lineIdx)
-                if (screenY >= -lineHeightPx * 2f && screenY <= viewportSize.height + lineHeightPx * 2f) {
-                    key(lineIdx) {
-                        val lineText = state.lines[lineIdx]
-                        val lineOverstrikes = state.overstrikesByLine[lineIdx]
+                if (screenY < -lineHeightPx * 2f || screenY > size.height + lineHeightPx * 2f) continue
 
-                        Box(
-                            modifier = Modifier
-                                .offset {
-                                    IntOffset(
-                                        x = textStartScreenX,
-                                        y = screenY.roundToInt()
-                                    )
-                                }
-                                .requiredWidth(textAreaWidthDp)
-                                .height(lineHeightDp),
-                            contentAlignment = Alignment.TopStart
-                        ) {
-                            val styledLine = remember(lineIdx, lineText, activeInk, theme.accentRibbonRed) {
-                                formatMonospaceMarkdownLine(
-                                    line = lineText,
-                                    lineIndex = lineIdx,
-                                    baseInkColor = activeInk,
-                                    accentRedColor = theme.accentRibbonRed
+                val lineText = state.lines[lineIdx]
+                if (lineText.isNotEmpty()) {
+                    val styledLine = formatMonospaceMarkdownLine(
+                        line = lineText,
+                        lineIndex = lineIdx,
+                        baseInkColor = activeInk,
+                        accentRedColor = theme.accentRibbonRed
+                    )
+                    val lineLayout = textMeasurer.measure(
+                        text = styledLine,
+                        style = TypewriterTypography.bodyMonospace,
+                        softWrap = false,
+                        maxLines = 1
+                    )
+                    drawText(
+                        textLayoutResult = lineLayout,
+                        topLeft = Offset(x = textStartX, y = screenY)
+                    )
+                }
+
+                // Draw Hardcore Mode overstrike characters on this line
+                val lineOverstrikes = state.overstrikesByLine[lineIdx]
+                lineOverstrikes?.forEach { (colIdx, oldChars) ->
+                    val cellX = textStartX + (colIdx * charWidthPx)
+                    oldChars.forEachIndexed { strikeIdx, oldChar ->
+                        val overstrikeAnnotated = buildAnnotatedString {
+                            withStyle(
+                                computeMechanicalCharStyle(
+                                    lineIndex = lineIdx + strikeIdx + 1,
+                                    colIndex = colIdx,
+                                    char = oldChar,
+                                    targetInkColor = theme.inkColor.copy(alpha = 0.78f)
                                 )
-                            }
-                            Text(
-                                text = styledLine,
-                                style = TypewriterTypography.bodyMonospace,
-                                maxLines = 1,
-                                softWrap = false
-                            )
-
-                            // O(1) Overstrike lookup for this specific line
-                            lineOverstrikes?.forEach { (colIdx, oldChars) ->
-                                val colOffsetDp = with(density) { (colIdx * charWidthPx).toDp() }
-                                oldChars.forEachIndexed { strikeIdx, oldChar ->
-                                    val overstrikeAnnotated = remember(lineIdx, colIdx, oldChar, theme.inkColor) {
-                                        buildAnnotatedString {
-                                            withStyle(
-                                                computeMechanicalCharStyle(
-                                                    lineIndex = lineIdx + strikeIdx + 1,
-                                                    colIndex = colIdx,
-                                                    char = oldChar,
-                                                    targetInkColor = theme.inkColor.copy(alpha = 0.78f)
-                                                )
-                                            ) {
-                                                append(oldChar)
-                                            }
-                                        }
-                                    }
-                                    Text(
-                                        text = overstrikeAnnotated,
-                                        style = TypewriterTypography.bodyMonospace,
-                                        modifier = Modifier.offset(
-                                            x = colOffsetDp,
-                                            y = if (strikeIdx % 2 == 0) (-0.5).dp else 0.5.dp
-                                        )
-                                    )
-                                }
+                            ) {
+                                append(oldChar)
                             }
                         }
+                        val charLayout = textMeasurer.measure(
+                            text = overstrikeAnnotated,
+                            style = TypewriterTypography.bodyMonospace,
+                            softWrap = false,
+                            maxLines = 1
+                        )
+                        drawText(
+                            textLayoutResult = charLayout,
+                            topLeft = Offset(
+                                x = cellX,
+                                y = screenY + if (strikeIdx % 2 == 0) -1f else 1f
+                            )
+                        )
                     }
                 }
             }
@@ -620,7 +636,7 @@ private fun TypewriterWorkspace(
             )
         }
 
-        // 5. TOP MINIMALIST HUD BAR (Auto-dims during focused typing)
+        // 5. TOP MINIMALIST HUD BAR
         TopTypewriterHud(
             state = state,
             currentPage = currentPage,
@@ -647,7 +663,7 @@ private fun TypewriterWorkspace(
                 .alpha(hudAlpha)
         )
 
-        // 6. VIRTUALIZED READ / PREVIEW MANUSCRIPT MODAL SHEET WITH PDF/HTML EXPORT + SHARE SHEET
+        // 6. VIRTUALIZED READ / PREVIEW MANUSCRIPT MODAL SHEET
         AnimatedVisibility(
             visible = state.isPreviewMode,
             modifier = Modifier.fillMaxSize()
@@ -678,7 +694,7 @@ private fun TypewriterWorkspace(
             )
         }
 
-        // 7. SLIDE-OUT MANUSCRIPT DRAWER WITH RENAME & DELETE
+        // 7. SLIDE-OUT MANUSCRIPT DRAWER
         AnimatedVisibility(
             visible = isDrawerOpen,
             modifier = Modifier.align(Alignment.CenterStart)
@@ -773,7 +789,7 @@ private fun TopTypewriterHud(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onToggleDrawer) {
-                    Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = "Manuscripts")
+                    Icon(Icons.Default.MenuBook, contentDescription = "Manuscripts")
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Column {
@@ -899,13 +915,13 @@ private fun TopTypewriterHud(
 
                 IconButton(onClick = onToggleMute) {
                     Icon(
-                        imageVector = if (state.isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                        imageVector = if (state.isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
                         contentDescription = "Toggle Typewriter Sound"
                     )
                 }
 
                 IconButton(onClick = onNewDocument) {
-                    Icon(Icons.AutoMirrored.Filled.NoteAdd, contentDescription = "New Manuscript")
+                    Icon(Icons.Default.NoteAdd, contentDescription = "New Manuscript")
                 }
 
                 IconButton(onClick = onShowDeveloperInfo) {
@@ -1106,7 +1122,6 @@ private fun ManuscriptPreviewModal(
                     color = theme.inkColor.copy(alpha = 0.2f)
                 )
 
-                // Virtualized LazyColumn for instantaneous multi-page rendering
                 LazyColumn(
                     modifier = Modifier.fillMaxSize()
                 ) {
@@ -1181,7 +1196,7 @@ private fun ManuscriptPreviewModal(
                                                 accentRed = theme.accentRibbonRed
                                             ),
                                             fontFamily = FontFamily.Monospace,
-                                            fontWeight = FontWeight.ExtraBold,
+                                            fontWeight = FontWeight.Bold,
                                             fontSize = 26.sp,
                                             modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
                                         )
@@ -1298,7 +1313,7 @@ private fun parseCleanMarkdownInline(
                     appendWithMechanicalPressure(
                         segment = raw.substring(i + 2, end),
                         targetColor = inkColor,
-                        extraStyle = SpanStyle(fontWeight = FontWeight.ExtraBold)
+                        extraStyle = SpanStyle(fontWeight = FontWeight.Bold)
                     )
                     i = end + 2
                 } else {
@@ -1341,8 +1356,7 @@ private fun parseCleanMarkdownInline(
                         segment = raw.substring(i + 1, end),
                         targetColor = accentRed,
                         extraStyle = SpanStyle(
-                            background = inkColor.copy(alpha = 0.12f),
-                            fontWeight = FontWeight.SemiBold
+                            background = inkColor.copy(alpha = 0.12f)
                         )
                     )
                     i = end + 1
