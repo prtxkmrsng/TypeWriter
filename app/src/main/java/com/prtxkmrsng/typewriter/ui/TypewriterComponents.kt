@@ -39,41 +39,28 @@ import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.random.Random
 
-/**
- * Computes a deterministic, organic mechanical typewriter imprint SpanStyle for a single character
- * using only the built-in Monospace font (preserving exact 1:1 horizontal column width).
- *
- * - Varies ribbon ink transfer opacity (74%..100%)
- * - Adds a subtle ink-spread shadow on high-pressure key strikes
- * - Applies a microscopic vertical typebar tolerance (BaselineShift)
- */
 fun computeMechanicalCharStyle(
     lineIndex: Int,
     colIndex: Int,
     char: Char,
     targetInkColor: Color
 ): SpanStyle {
-    // Mix coordinates + char code so each typed letter has a unique, stable mechanical strike feel
     var h = (lineIndex * 3137) xor (colIndex * 997) xor (char.code * 131)
     h = h xor (h ushr 16)
     h *= 0x45d9f3b
     h = h xor (h ushr 16)
     val positiveHash = abs(h)
 
-    // Normalized strike pressure in 0.0f..1.0f
     val pressure = (positiveHash % 1000) / 1000f
 
-    // Ink transfer opacity: lighter strikes look slightly worn; heavy strikes are deep & saturated
     val inkAlpha = when {
         pressure > 0.72f -> 1.0f
         pressure > 0.25f -> 0.86f + (pressure * 0.14f)
         else -> 0.73f + (pressure * 0.45f)
     }.coerceIn(0.72f, 1.0f)
 
-    // Microscopic typebar vertical alignment tolerance (-0.020f .. +0.020f)
     val microShift = (((positiveHash / 1000) % 9) - 4) * 0.005f
 
-    // Heavy strikes press more ink from the ribbon into the paper fibers (subtle ink bleed shadow)
     val inkBleedShadow = when {
         pressure > 0.72f -> Shadow(
             color = targetInkColor.copy(alpha = 0.40f),
@@ -95,10 +82,6 @@ fun computeMechanicalCharStyle(
     )
 }
 
-/**
- * Formats a line of Markdown on the typewriter sheet with both inline Markdown styling
- * AND subtle per-character mechanical ink-pressure variation.
- */
 fun formatMonospaceMarkdownLine(
     line: String,
     lineIndex: Int = 0,
@@ -112,7 +95,6 @@ fun formatMonospaceMarkdownLine(
     val isHeading = trimmed.startsWith("#")
     val isQuote = trimmed.startsWith(">")
 
-    // 1. Apply per-character mechanical ink-pressure & micro-baseline variation first
     val lineBaseColor = when {
         isHeading -> accentRedColor
         isQuote -> baseInkColor.copy(alpha = 0.82f)
@@ -135,7 +117,6 @@ fun formatMonospaceMarkdownLine(
         }
     }
 
-    // 2. Headings (#, ##, ###)
     if (isHeading) {
         addStyle(
             SpanStyle(fontWeight = FontWeight.ExtraBold),
@@ -145,7 +126,6 @@ fun formatMonospaceMarkdownLine(
         return@buildAnnotatedString
     }
 
-    // 3. Blockquotes (>)
     if (isQuote) {
         addStyle(
             SpanStyle(fontStyle = FontStyle.Italic),
@@ -156,7 +136,6 @@ fun formatMonospaceMarkdownLine(
 
     val fadedSyntax = SpanStyle(color = baseInkColor.copy(alpha = 0.34f))
 
-    // 4. Bold (**text**)
     Regex("\\*\\*(.+?)\\*\\*").findAll(line).forEach { match ->
         val range = match.range
         addStyle(fadedSyntax, range.first, range.first + 2)
@@ -168,7 +147,6 @@ fun formatMonospaceMarkdownLine(
         addStyle(fadedSyntax, range.last - 1, range.last + 1)
     }
 
-    // 5. Italic (*text* or _text_)
     Regex("(?<!\\*)\\*([^*]+)\\*(?!\\*)|_([^_]+)_").findAll(line).forEach { match ->
         val range = match.range
         addStyle(fadedSyntax, range.first, range.first + 1)
@@ -180,7 +158,6 @@ fun formatMonospaceMarkdownLine(
         addStyle(fadedSyntax, range.last, range.last + 1)
     }
 
-    // 6. Strikethrough (~~text~~)
     Regex("~~(.+?)~~").findAll(line).forEach { match ->
         val range = match.range
         addStyle(fadedSyntax, range.first, range.first + 2)
@@ -195,7 +172,6 @@ fun formatMonospaceMarkdownLine(
         addStyle(fadedSyntax, range.last - 1, range.last + 1)
     }
 
-    // 7. Inline Code (`code`)
     Regex("`([^`]+)`").findAll(line).forEach { match ->
         val range = match.range
         addStyle(fadedSyntax, range.first, range.first + 1)
@@ -458,7 +434,6 @@ fun TypewriterHardwareOverlay(
                 )
             }
 
-            // Center Vintage Brass Nameplate with Page Counter & Line Odometer
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)

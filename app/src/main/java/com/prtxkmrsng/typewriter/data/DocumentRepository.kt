@@ -124,9 +124,6 @@ class DocumentRepository(private val context: Context) {
             }
         }
 
-    /**
-     * Exports the current manuscript as a styled, self-contained HTML file with 55-line page breaks.
-     */
     suspend fun exportToHtml(
         folderUri: Uri,
         documentName: String,
@@ -251,10 +248,6 @@ class DocumentRepository(private val context: Context) {
         }
     }
 
-    /**
-     * Exports the current manuscript as a paginated PDF (55 lines per page) with subtle mechanical
-     * ink-pressure variation per character.
-     */
     suspend fun exportToPdf(
         folderUri: Uri,
         documentName: String,
@@ -335,11 +328,10 @@ class DocumentRepository(private val context: Context) {
                             canvas.drawText(cleanText.removePrefix(">").trimStart(), leftMargin + 10f, y, quotePaint)
                         }
                         else -> {
-                            // Draw character by character with subtle mechanical ink-pressure alpha & micro-jitter
                             cleanText.forEachIndexed { colIdx, ch ->
                                 if (ch != ' ') {
                                     val hash = abs(globalLineIdx * 131 + colIdx * 37 + ch.code * 17)
-                                    val alpha = 195 + (hash % 61) // 195..255 ink pressure
+                                    val alpha = 195 + (hash % 61)
                                     val yJitter = ((hash % 5) - 2) * 0.14f
                                     bodyPaint.alpha = alpha
                                     canvas.drawText(

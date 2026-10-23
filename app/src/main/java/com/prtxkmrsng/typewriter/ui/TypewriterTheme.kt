@@ -75,12 +75,12 @@ enum class TypewriterThemeMode(
     TWILIGHT(
         displayName = "Twilight Torch",
         deskBackground = Color(0xFF050507),
-        paperBackground = Color(0xFFF5EBD6), // Illuminated warm paper under the torch beam
+        paperBackground = Color(0xFFF5EBD6),
         paperShadow = Color(0xCC000000),
         inkColor = Color(0xFF181410),
         accentRibbonRed = Color(0xFFA8241C),
         hardwareBody = Color(0xFF0D0D10),
-        hardwareChrome = Color(0xFF8C734B), // Warm brass hardware
+        hardwareChrome = Color(0xFF8C734B),
         marginLineColor = Color(0x33A8241C),
         hudBackground = Color(0xD90D0D10),
         hudText = Color(0xFFE6C891),

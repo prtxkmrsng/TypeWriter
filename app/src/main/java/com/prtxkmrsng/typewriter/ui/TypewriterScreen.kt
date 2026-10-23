@@ -57,9 +57,6 @@ import androidx.compose.ui.unit.sp
 import com.prtxkmrsng.typewriter.data.ExportedFileResult
 import kotlin.math.roundToInt
 
-/**
- * Launches the native Android Share Sheet for an exported PDF, HTML, or Markdown file.
- */
 private fun shareExportedManuscript(context: Context, exported: ExportedFileResult) {
     val shareIntent = Intent(Intent.ACTION_SEND).apply {
         type = exported.mimeType
@@ -194,13 +191,19 @@ private fun TypewriterWorkspace(
 
     val textMeasurer = rememberTextMeasurer()
     val density = LocalDensity.current
-    val charSampleLayout = remember(density) {
-        textMeasurer.measure(
-            text = "M",
-            style = TypewriterTypography.bodyMonospace
+
+    // Measure across a full 68-character line to get the exact subpixel monospace advance
+    val charWidthPx = remember(density, state.maxCharsPerLine) {
+        val sampleLayout = textMeasurer.measure(
+            text = "M".repeat(state.maxCharsPerLine),
+            style = TypewriterTypography.bodyMonospace,
+            softWrap = false,
+            maxLines = 1
         )
+        (sampleLayout.getHorizontalPosition(state.maxCharsPerLine, usePrimaryDirection = true) / state.maxCharsPerLine)
+            .coerceAtLeast(10f)
     }
-    val charWidthPx = charSampleLayout.size.width.toFloat().coerceAtLeast(12f)
+
     val lineHeightPx = with(density) { 32.dp.toPx() }
     val paperHorizontalPaddingPx = with(density) { 64.dp.toPx() }
     val textAreaWidthPx = state.maxCharsPerLine * charWidthPx
@@ -229,7 +232,39 @@ private fun TypewriterWorkspace(
         )
     }
 
-    val targetPaperLeftX = typeheadCenter.x - paperHorizontalPaddingPx - (state.cursorCol * charWidthPx)
+    val activeInk = if (state.isRedRibbon) theme.accentRibbonRed else theme.inkColor
+    val currentLineText = state.lines.getOrNull(state.cursorLine).orEmpty()
+
+    // Exact horizontal coordinate of cursorCol on the active rendered Text line
+    val activeCursorOffsetPx = remember(
+        state.cursorLine,
+        state.cursorCol,
+        currentLineText,
+        activeInk,
+        theme.accentRibbonRed,
+        charWidthPx
+    ) {
+        val safeCol = state.cursorCol.coerceIn(0, currentLineText.length)
+        if (safeCol == 0) {
+            0f
+        } else {
+            val styledActiveLine = formatMonospaceMarkdownLine(
+                line = currentLineText,
+                lineIndex = state.cursorLine,
+                baseInkColor = activeInk,
+                accentRedColor = theme.accentRibbonRed
+            )
+            val activeLayout = textMeasurer.measure(
+                text = styledActiveLine,
+                style = TypewriterTypography.bodyMonospace,
+                softWrap = false,
+                maxLines = 1
+            )
+            activeLayout.getHorizontalPosition(safeCol, usePrimaryDirection = true)
+        }
+    }
+
+    val targetPaperLeftX = typeheadCenter.x - paperHorizontalPaddingPx - activeCursorOffsetPx
     val targetPaperTopY = typeheadCenter.y - lineYInPaperRoll(state.cursorLine) - (lineHeightPx * 0.78f)
 
     val animatedPaperX by animateFloatAsState(
@@ -420,8 +455,6 @@ private fun TypewriterWorkspace(
         }
 
         // 2. VIRTUALIZED UNBOUNDED LINE RENDERER WITH ORGANIC INK-PRESSURE VARIATION
-        val activeInk = if (state.isRedRibbon) theme.accentRibbonRed else theme.inkColor
-        val textAreaWidthDp = with(density) { (textAreaWidthPx + charWidthPx * 4f).toDp() }
         val lineHeightDp = with(density) { lineHeightPx.toDp() }
         val textStartScreenX = (animatedPaperX + paperHorizontalPaddingPx).roundToInt()
 
@@ -438,7 +471,7 @@ private fun TypewriterWorkspace(
                                     y = screenY.roundToInt()
                                 )
                             }
-                            .requiredWidth(textAreaWidthDp)
+                            .wrapContentWidth(align = Alignment.Start, unbounded = true)
                             .height(lineHeightDp),
                         contentAlignment = Alignment.TopStart
                     ) {
@@ -457,7 +490,7 @@ private fun TypewriterWorkspace(
                             softWrap = false
                         )
 
-                        // Render physical Hardcore Mode overstruck characters with heavy ink imprint
+                        // Render physical Hardcore Mode overstruck characters
                         state.overstruckCells.forEach { (cell, oldChars) ->
                             if (cell.first == lineIdx) {
                                 val colOffsetDp = with(density) { (cell.second * charWidthPx).toDp() }
@@ -776,7 +809,6 @@ private fun TopTypewriterHud(
                     Icon(Icons.Default.NoteAdd, contentDescription = "New Manuscript")
                 }
 
-                // Developer Info Button (@prtxkmrsng)
                 IconButton(onClick = onShowDeveloperInfo) {
                     Icon(
                         imageVector = Icons.Default.Info,
@@ -827,7 +859,6 @@ private fun ManuscriptPreviewModal(
                     .fillMaxSize()
                     .padding(horizontal = 48.dp, vertical = 32.dp)
             ) {
-                // Header Bar with Export PDF + Share PDF, Export HTML + Share HTML, Share .MD, Close
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -853,7 +884,6 @@ private fun ManuscriptPreviewModal(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // PDF Export + Immediate PDF Share Sheet button
                         Button(
                             onClick = onExportPdf,
                             colors = ButtonDefaults.buttonColors(
@@ -883,7 +913,6 @@ private fun ManuscriptPreviewModal(
 
                         Spacer(modifier = Modifier.width(4.dp))
 
-                        // HTML Export + Immediate HTML Share Sheet button
                         OutlinedButton(
                             onClick = onExportHtml,
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
@@ -907,7 +936,6 @@ private fun ManuscriptPreviewModal(
                             )
                         }
 
-                        // Share raw .MD button
                         OutlinedButton(
                             onClick = onShareMarkdown,
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
@@ -929,7 +957,6 @@ private fun ManuscriptPreviewModal(
                     }
                 }
 
-                // Export Status Banner with one-tap "SHARE FILE" button
                 state.exportStatusMessage?.let { statusMsg ->
                     Spacer(modifier = Modifier.height(10.dp))
                     Surface(
@@ -981,7 +1008,6 @@ private fun ManuscriptPreviewModal(
                     color = theme.inkColor.copy(alpha = 0.2f)
                 )
 
-                // Paginated Manuscript Content (55 lines per perforated page)
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
@@ -1126,10 +1152,6 @@ private fun ManuscriptPreviewModal(
     }
 }
 
-/**
- * Strips raw Markdown tokens for the Manuscript Proof view while retaining organic
- * per-character mechanical ink-pressure variation.
- */
 private fun parseCleanMarkdownInline(
     raw: String,
     lineIndex: Int,
@@ -1231,9 +1253,6 @@ private fun parseCleanMarkdownInline(
     }
 }
 
-/**
- * Vintage Brass & Ivory Developer Specification Plaque Modal crediting @prtxkmrsng.
- */
 @Composable
 private fun DeveloperInfoDialog(onDismiss: () -> Unit) {
     val uriHandler = LocalUriHandler.current
