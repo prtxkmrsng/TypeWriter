@@ -104,9 +104,9 @@ enum class TypewriterThemeMode(
 object TypewriterTypography {
     val bodyMonospace = TextStyle(
         fontFamily = FontFamily.Monospace,
-        fontWeight = FontWeight.Normal,
+        fontWeight = FontWeight.Medium,
         fontSize = 20.sp,
         lineHeight = 32.sp,
-        letterSpacing = 0.sp
+        letterSpacing = 0.5.sp
     )
 }

@@ -30,6 +30,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.BaselineShift
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -42,12 +43,10 @@ private val REGEX_BOLD = Regex("\\*\\*(.+?)\\*\\*")
 private val REGEX_ITALIC = Regex("(?<!\\*)\\*([^*]+)\\*(?!\\*)|_([^_]+)_")
 private val REGEX_STRIKE = Regex("~~(.+?)~~")
 private val REGEX_CODE = Regex("`([^`]+)`")
-private val REGEX_LIST_PREFIX = Regex("^(\\s*)([-*+]|\\d+\\.)\\s+(\\[[ xX]\\]\\s+)?")
+private val REGEX_LIST_PREFIX = Regex("^(\\s*)([-*+]|\\d+\\.)\\s+(\\[[ xX]]\\s+)?")
 
 /**
- * Deterministic per-character mechanical typewriter ink-pressure style.
- * Uses only non-metric-affecting properties (color alpha + shadow) so glyph advances
- * never deviate from the fixed monospace grid.
+ * Deterministic per-character mechanical typewriter ink-pressure & micro-alignment style.
  */
 fun computeMechanicalCharStyle(
     lineIndex: Int,
@@ -69,30 +68,32 @@ fun computeMechanicalCharStyle(
         else -> 0.74f + (pressure * 0.44f)
     }.coerceIn(0.74f, 1.0f)
 
+    val microShift = (((positiveHash / 1000) % 9) - 4) * 0.005f
+
     val inkBleedShadow = when {
         pressure > 0.72f -> Shadow(
-            color = targetInkColor.copy(alpha = 0.38f),
-            offset = Offset(0.2f, 0.2f),
-            blurRadius = 1.0f
+            color = targetInkColor.copy(alpha = 0.40f),
+            offset = Offset(0.25f, 0.25f),
+            blurRadius = 1.15f
         )
         pressure > 0.42f -> Shadow(
-            color = targetInkColor.copy(alpha = 0.16f),
-            offset = Offset(0.1f, 0.1f),
-            blurRadius = 0.5f
+            color = targetInkColor.copy(alpha = 0.18f),
+            offset = Offset(0.15f, 0.15f),
+            blurRadius = 0.55f
         )
         else -> null
     }
 
     return SpanStyle(
         color = targetInkColor.copy(alpha = inkAlpha),
+        baselineShift = BaselineShift(microShift),
         shadow = inkBleedShadow
     )
 }
 
 /**
- * Formats a line of Markdown on the typewriter sheet while preserving exact 1:1 monospace
- * column widths. Replaces spaces with non-breaking spaces (\u00A0) so trailing spaces
- * are never collapsed by Android's text layout engine.
+ * Formats a line of Markdown on the typewriter sheet while strictly preserving 1:1 monospace
+ * column widths.
  */
 fun formatMonospaceMarkdownLine(
     line: String,
@@ -100,9 +101,8 @@ fun formatMonospaceMarkdownLine(
     baseInkColor: Color,
     accentRedColor: Color
 ): AnnotatedString = buildAnnotatedString {
-    val nonCollapsingLine = line.replace(' ', '\u00A0')
-    append(nonCollapsingLine)
-    if (nonCollapsingLine.isEmpty()) return@buildAnnotatedString
+    append(line)
+    if (line.isEmpty()) return@buildAnnotatedString
 
     val trimmed = line.trimStart()
     val isHeading = trimmed.startsWith("#")
@@ -133,9 +133,9 @@ fun formatMonospaceMarkdownLine(
 
     if (isHeading || isHorizontalRule) {
         addStyle(
-            SpanStyle(fontWeight = FontWeight.Bold),
+            SpanStyle(fontWeight = FontWeight.ExtraBold),
             start = 0,
-            end = nonCollapsingLine.length
+            end = line.length
         )
         return@buildAnnotatedString
     }
@@ -144,13 +144,13 @@ fun formatMonospaceMarkdownLine(
         addStyle(
             SpanStyle(fontStyle = FontStyle.Italic),
             start = 0,
-            end = nonCollapsingLine.length
+            end = line.length
         )
     }
 
     REGEX_LIST_PREFIX.find(line)?.let { match ->
         addStyle(
-            SpanStyle(color = accentRedColor, fontWeight = FontWeight.Bold),
+            SpanStyle(color = accentRedColor, fontWeight = FontWeight.ExtraBold),
             match.range.first,
             match.range.last + 1
         )
@@ -162,7 +162,7 @@ fun formatMonospaceMarkdownLine(
         val range = match.range
         addStyle(fadedSyntax, range.first, range.first + 2)
         addStyle(
-            SpanStyle(fontWeight = FontWeight.Bold),
+            SpanStyle(fontWeight = FontWeight.ExtraBold),
             range.first + 2,
             range.last - 1
         )
@@ -201,7 +201,8 @@ fun formatMonospaceMarkdownLine(
             val ch = line[idx]
             addStyle(
                 computeMechanicalCharStyle(lineIndex, idx, ch, accentRedColor).copy(
-                    background = baseInkColor.copy(alpha = 0.10f)
+                    background = baseInkColor.copy(alpha = 0.10f),
+                    fontWeight = FontWeight.SemiBold
                 ),
                 idx,
                 idx + 1
@@ -258,19 +259,19 @@ fun TypewriterHardwareOverlay(
             val liftOffset = strikeProgress.value * 14f
 
             // 0. Active Character Typehead Reticle / Alignment Box on the paper
-            val reticleLeft = cx
-            val reticleTop = cy - (lineHeightPx * 0.75f)
+            val reticleLeft = cx - 1f
+            val reticleTop = cy - (lineHeightPx * 0.72f)
             drawRoundRect(
-                color = (if (isRedRibbon) theme.accentRibbonRed else theme.hardwareChrome).copy(alpha = 0.38f),
+                color = (if (isRedRibbon) theme.accentRibbonRed else theme.hardwareChrome).copy(alpha = 0.35f),
                 topLeft = Offset(reticleLeft, reticleTop),
-                size = Size(charWidthPx, lineHeightPx * 0.85f),
+                size = Size(charWidthPx + 2f, lineHeightPx * 0.85f),
                 cornerRadius = CornerRadius(2f, 2f),
                 style = Stroke(width = 1.5f)
             )
             drawLine(
-                color = if (isRedRibbon) theme.accentRibbonRed else theme.inkColor.copy(alpha = 0.7f),
-                start = Offset(reticleLeft, reticleTop + lineHeightPx * 0.82f),
-                end = Offset(reticleLeft + charWidthPx, reticleTop + lineHeightPx * 0.82f),
+                color = if (isRedRibbon) theme.accentRibbonRed else theme.inkColor.copy(alpha = 0.65f),
+                start = Offset(reticleLeft + 1f, reticleTop + lineHeightPx * 0.82f),
+                end = Offset(reticleLeft + charWidthPx + 1f, reticleTop + lineHeightPx * 0.82f),
                 strokeWidth = 2.5f
             )
 
@@ -286,7 +287,7 @@ fun TypewriterHardwareOverlay(
                 topLeft = Offset(0f, bailY + 8f),
                 size = Size(size.width, 4f)
             )
-            val tickStep = charWidthPx.coerceAtLeast(10f)
+            val tickStep = charWidthPx.coerceAtLeast(16f)
             var tickX = cx % tickStep
             var tickIdx = 0
             while (tickX < size.width) {
