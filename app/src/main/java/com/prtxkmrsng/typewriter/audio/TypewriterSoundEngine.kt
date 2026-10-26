@@ -3,73 +3,109 @@ package com.prtxkmrsng.typewriter.audio
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.PI
 import kotlin.math.exp
 import kotlin.math.sin
 import kotlin.random.Random
 
 class TypewriterSoundEngine {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val sampleRate = 44100
+    @Volatile
     var isMuted: Boolean = false
 
+    // Pre-synthesized PCM buffers
     private val keyStrikeBuffers = List(4) { generateKeyStrike(it) }
     private val spacebarBuffer = generateSpacebarThud()
     private val carriageReturnBuffer = generateCarriageReturn()
     private val bellBuffer = generateMarginBell()
+    private val platenTickBuffer = generatePlatenTick()
+
+    // Pre-warmed round-robin AudioTrack voice pools (zero allocation during typing)
+    private val keyVoicePool: List<AudioTrack> = List(8) { idx ->
+        createStaticTrack(keyStrikeBuffers[idx % keyStrikeBuffers.size])
+    }
+    private val keyVoiceCursor = AtomicInteger(0)
+
+    private val spaceVoicePool: List<AudioTrack> = List(3) {
+        createStaticTrack(spacebarBuffer)
+    }
+    private val spaceVoiceCursor = AtomicInteger(0)
+
+    private val crTrack: AudioTrack = createStaticTrack(carriageReturnBuffer)
+    private val bellTrack: AudioTrack = createStaticTrack(bellBuffer)
+    private val platenTickTrack: AudioTrack = createStaticTrack(platenTickBuffer)
 
     fun playKeyStrike() {
         if (isMuted) return
-        playPcm(keyStrikeBuffers.random())
+        val index = (keyVoiceCursor.getAndIncrement() and Int.MAX_VALUE) % keyVoicePool.size
+        retriggerStaticTrack(keyVoicePool[index])
     }
 
     fun playSpacebar() {
         if (isMuted) return
-        playPcm(spacebarBuffer)
+        val index = (spaceVoiceCursor.getAndIncrement() and Int.MAX_VALUE) % spaceVoicePool.size
+        retriggerStaticTrack(spaceVoicePool[index])
     }
 
     fun playCarriageReturn() {
         if (isMuted) return
-        playPcm(carriageReturnBuffer)
+        retriggerStaticTrack(crTrack)
     }
 
     fun playMarginBell() {
         if (isMuted) return
-        playPcm(bellBuffer)
+        retriggerStaticTrack(bellTrack)
     }
 
-    private fun playPcm(pcmData: ShortArray) {
-        scope.launch {
-            try {
-                val track = AudioTrack.Builder()
-                    .setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                            .build()
-                    )
-                    .setAudioFormat(
-                        AudioFormat.Builder()
-                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                            .setSampleRate(sampleRate)
-                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                            .build()
-                    )
-                    .setBufferSizeInBytes(pcmData.size * 2)
-                    .setTransferMode(AudioTrack.MODE_STATIC)
-                    .build()
+    fun playPlatenTick() {
+        if (isMuted) return
+        retriggerStaticTrack(platenTickTrack)
+    }
 
-                track.write(pcmData, 0, pcmData.size)
-                track.play()
-                val durationMs = (pcmData.size * 1000L) / sampleRate + 50L
-                delay(durationMs)
+    private fun createStaticTrack(pcmData: ShortArray): AudioTrack {
+        return AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(sampleRate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build()
+            )
+            .setBufferSizeInBytes(pcmData.size * 2)
+            .setTransferMode(AudioTrack.MODE_STATIC)
+            .build()
+            .apply {
+                write(pcmData, 0, pcmData.size)
+            }
+    }
+
+    @Synchronized
+    private fun retriggerStaticTrack(track: AudioTrack) {
+        try {
+            if (track.state != AudioTrack.STATE_INITIALIZED) return
+            if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                track.stop()
+            }
+            track.reloadStaticData()
+            track.play()
+        } catch (_: Exception) {
+        }
+    }
+
+    fun release() {
+        (keyVoicePool + spaceVoicePool + listOf(crTrack, bellTrack, platenTickTrack)).forEach { track ->
+            runCatching {
+                if (track.state == AudioTrack.STATE_INITIALIZED) {
+                    track.stop()
+                }
                 track.release()
-            } catch (_: Exception) {
             }
         }
     }
@@ -78,23 +114,23 @@ class TypewriterSoundEngine {
         val durationSec = 0.048
         val numSamples = (sampleRate * durationSec).toInt()
         val samples = ShortArray(numSamples)
-        val pitchOffset = 1.0 + (variant - 1.5) * 0.06
-        val rnd = Random(variant * 100)
+        val pitchOffset = 1.0 + (variant - 1.5) * 0.055
+        val rnd = Random(variant * 100 + 7)
 
         for (i in 0 until numSamples) {
             val t = i.toDouble() / sampleRate
-            val clickEnv = exp(-t * 280.0)
-            val t2 = (t - 0.016).coerceAtLeast(0.0)
-            val tickEnv = if (t >= 0.016) exp(-t2 * 350.0) * 0.45 else 0.0
+            val clickEnv = exp(-t * 285.0)
+            val t2 = (t - 0.015).coerceAtLeast(0.0)
+            val tickEnv = if (t >= 0.015) exp(-t2 * 360.0) * 0.45 else 0.0
 
             val noise = (rnd.nextDouble() * 2.0 - 1.0)
             val metallicResonance =
-                sin(2.0 * PI * 1850.0 * pitchOffset * t) * 0.5 +
-                    sin(2.0 * PI * 3400.0 * pitchOffset * t) * 0.3 +
-                    sin(2.0 * PI * 420.0 * pitchOffset * t) * 0.6
+                sin(2.0 * PI * 1880.0 * pitchOffset * t) * 0.5 +
+                    sin(2.0 * PI * 3420.0 * pitchOffset * t) * 0.3 +
+                    sin(2.0 * PI * 430.0 * pitchOffset * t) * 0.6
 
             val signal = ((noise * 0.65 + metallicResonance * 0.35) * clickEnv) +
-                ((noise * 0.7 + sin(2.0 * PI * 1200.0 * t2) * 0.3) * tickEnv)
+                ((noise * 0.7 + sin(2.0 * PI * 1250.0 * t2) * 0.3) * tickEnv)
 
             samples[i] = (signal.coerceIn(-1.0, 1.0) * Short.MAX_VALUE * 0.85).toInt().toShort()
         }
@@ -109,10 +145,10 @@ class TypewriterSoundEngine {
 
         for (i in 0 until numSamples) {
             val t = i.toDouble() / sampleRate
-            val env = exp(-t * 190.0)
+            val env = exp(-t * 195.0)
             val noise = (rnd.nextDouble() * 2.0 - 1.0)
-            val lowBody = sin(2.0 * PI * 190.0 * t) * 0.7 + sin(2.0 * PI * 360.0 * t) * 0.3
-            val signal = (noise * 0.45 + lowBody * 0.55) * env
+            val lowBody = sin(2.0 * PI * 185.0 * t) * 0.72 + sin(2.0 * PI * 355.0 * t) * 0.28
+            val signal = (noise * 0.42 + lowBody * 0.58) * env
             samples[i] = (signal.coerceIn(-1.0, 1.0) * Short.MAX_VALUE * 0.85).toInt().toShort()
         }
         return samples
@@ -156,6 +192,22 @@ class TypewriterSoundEngine {
 
             val signal = (bell * env) + strikeClick
             samples[i] = (signal.coerceIn(-1.0, 1.0) * Short.MAX_VALUE * 0.75).toInt().toShort()
+        }
+        return samples
+    }
+
+    private fun generatePlatenTick(): ShortArray {
+        val durationSec = 0.028
+        val numSamples = (sampleRate * durationSec).toInt()
+        val samples = ShortArray(numSamples)
+        val rnd = Random(77)
+
+        for (i in 0 until numSamples) {
+            val t = i.toDouble() / sampleRate
+            val env = exp(-t * 320.0)
+            val noise = (rnd.nextDouble() * 2.0 - 1.0)
+            val click = sin(2.0 * PI * 780.0 * t) * 0.6 + noise * 0.4
+            samples[i] = (click * env * Short.MAX_VALUE * 0.55).toInt().toShort()
         }
         return samples
     }
