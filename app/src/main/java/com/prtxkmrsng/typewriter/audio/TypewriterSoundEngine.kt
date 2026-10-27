@@ -24,26 +24,26 @@ class TypewriterSoundEngine {
     // Pre-warmed round-robin AudioTrack voice pools (zero allocation during typing)
     private val keyVoicePool: List<AudioTrack> = List(8) { idx ->
         createStaticTrack(keyStrikeBuffers[idx % keyStrikeBuffers.size])
-    }
+    }.filterNotNull()
     private val keyVoiceCursor = AtomicInteger(0)
 
     private val spaceVoicePool: List<AudioTrack> = List(3) {
         createStaticTrack(spacebarBuffer)
-    }
+    }.filterNotNull()
     private val spaceVoiceCursor = AtomicInteger(0)
 
-    private val crTrack: AudioTrack = createStaticTrack(carriageReturnBuffer)
-    private val bellTrack: AudioTrack = createStaticTrack(bellBuffer)
-    private val platenTickTrack: AudioTrack = createStaticTrack(platenTickBuffer)
+    private val crTrack: AudioTrack? = createStaticTrack(carriageReturnBuffer)
+    private val bellTrack: AudioTrack? = createStaticTrack(bellBuffer)
+    private val platenTickTrack: AudioTrack? = createStaticTrack(platenTickBuffer)
 
     fun playKeyStrike() {
-        if (isMuted) return
+        if (isMuted || keyVoicePool.isEmpty()) return
         val index = (keyVoiceCursor.getAndIncrement() and Int.MAX_VALUE) % keyVoicePool.size
         retriggerStaticTrack(keyVoicePool[index])
     }
 
     fun playSpacebar() {
-        if (isMuted) return
+        if (isMuted || spaceVoicePool.isEmpty()) return
         val index = (spaceVoiceCursor.getAndIncrement() and Int.MAX_VALUE) % spaceVoicePool.size
         retriggerStaticTrack(spaceVoicePool[index])
     }
@@ -63,31 +63,34 @@ class TypewriterSoundEngine {
         retriggerStaticTrack(platenTickTrack)
     }
 
-    private fun createStaticTrack(pcmData: ShortArray): AudioTrack {
-        return AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build()
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setSampleRate(sampleRate)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .build()
-            )
-            .setBufferSizeInBytes(pcmData.size * 2)
-            .setTransferMode(AudioTrack.MODE_STATIC)
-            .build()
-            .apply {
-                write(pcmData, 0, pcmData.size)
-            }
+    private fun createStaticTrack(pcmData: ShortArray): AudioTrack? {
+        return runCatching {
+            AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build()
+                )
+                .setBufferSizeInBytes(pcmData.size * 2)
+                .setTransferMode(AudioTrack.MODE_STATIC)
+                .build()
+                .apply {
+                    write(pcmData, 0, pcmData.size)
+                }
+        }.getOrNull()
     }
 
     @Synchronized
-    private fun retriggerStaticTrack(track: AudioTrack) {
+    private fun retriggerStaticTrack(track: AudioTrack?) {
+        if (track == null) return
         try {
             if (track.state != AudioTrack.STATE_INITIALIZED) return
             if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
@@ -100,10 +103,12 @@ class TypewriterSoundEngine {
     }
 
     fun release() {
-        (keyVoicePool + spaceVoicePool + listOf(crTrack, bellTrack, platenTickTrack)).forEach { track ->
+        (keyVoicePool + spaceVoicePool + listOfNotNull(crTrack, bellTrack, platenTickTrack)).forEach { track ->
             runCatching {
                 if (track.state == AudioTrack.STATE_INITIALIZED) {
-                    track.stop()
+                    if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                        track.stop()
+                    }
                 }
                 track.release()
             }

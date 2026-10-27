@@ -45,6 +45,47 @@ private val REGEX_STRIKE = Regex("~~(.+?)~~")
 private val REGEX_CODE = Regex("`([^`]+)`")
 private val REGEX_LIST_PREFIX = Regex("^(\\s*)([-*+]|\\d+\\.)\\s+(\\[[ xX]]\\s+)?")
 
+private data class FormattedLineKey(
+    val line: String,
+    val lineIndex: Int,
+    val inkColorBits: Long,
+    val accentRedColorBits: Long
+)
+
+internal class SimpleLruCache<K, V>(private val maxSize: Int) : LinkedHashMap<K, V>(maxSize, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<K, V>?): Boolean {
+        return size > maxSize
+    }
+}
+
+private val formattedLineCache = SimpleLruCache<FormattedLineKey, AnnotatedString>(512)
+private val shadowCache = SimpleLruCache<Pair<Long, Boolean>, Shadow>(32)
+
+private fun getCachedShadow(targetInkColor: Color, isHeavy: Boolean): Shadow {
+    val key = Pair(targetInkColor.value.toLong(), isHeavy)
+    synchronized(shadowCache) {
+        val existing = shadowCache[key]
+        if (existing != null) return existing
+    }
+    val created = if (isHeavy) {
+        Shadow(
+            color = targetInkColor.copy(alpha = 0.40f),
+            offset = Offset(0.25f, 0.25f),
+            blurRadius = 1.15f
+        )
+    } else {
+        Shadow(
+            color = targetInkColor.copy(alpha = 0.18f),
+            offset = Offset(0.15f, 0.15f),
+            blurRadius = 0.55f
+        )
+    }
+    synchronized(shadowCache) {
+        shadowCache[key] = created
+    }
+    return created
+}
+
 /**
  * Deterministic per-character mechanical typewriter ink-pressure & micro-alignment style.
  */
@@ -71,16 +112,8 @@ fun computeMechanicalCharStyle(
     val microShift = (((positiveHash / 1000) % 9) - 4) * 0.005f
 
     val inkBleedShadow = when {
-        pressure > 0.72f -> Shadow(
-            color = targetInkColor.copy(alpha = 0.40f),
-            offset = Offset(0.25f, 0.25f),
-            blurRadius = 1.15f
-        )
-        pressure > 0.42f -> Shadow(
-            color = targetInkColor.copy(alpha = 0.18f),
-            offset = Offset(0.15f, 0.15f),
-            blurRadius = 0.55f
-        )
+        pressure > 0.72f -> getCachedShadow(targetInkColor, true)
+        pressure > 0.42f -> getCachedShadow(targetInkColor, false)
         else -> null
     }
 
@@ -93,15 +126,23 @@ fun computeMechanicalCharStyle(
 
 /**
  * Formats a line of Markdown on the typewriter sheet while strictly preserving 1:1 monospace
- * column widths.
+ * column widths. Caches formatted lines to avoid re-parsing unchanged text across animation frames.
  */
 fun formatMonospaceMarkdownLine(
     line: String,
     lineIndex: Int = 0,
     baseInkColor: Color,
     accentRedColor: Color
-): AnnotatedString = buildAnnotatedString {
-    append(line)
+): AnnotatedString {
+    if (line.isEmpty()) return AnnotatedString("")
+    val cacheKey = FormattedLineKey(line, lineIndex, baseInkColor.value.toLong(), accentRedColor.value.toLong())
+    synchronized(formattedLineCache) {
+        val cached = formattedLineCache[cacheKey]
+        if (cached != null) return cached
+    }
+
+    val formatted = buildAnnotatedString {
+        append(line)
     if (line.isEmpty()) return@buildAnnotatedString
 
     val trimmed = line.trimStart()
@@ -210,6 +251,11 @@ fun formatMonospaceMarkdownLine(
         }
         addStyle(fadedSyntax, range.last, range.last + 1)
     }
+    }
+    synchronized(formattedLineCache) {
+        formattedLineCache[cacheKey] = formatted
+    }
+    return formatted
 }
 
 @Composable
@@ -237,6 +283,9 @@ fun TypewriterHardwareOverlay(
 
     val ribbonPathBlack = remember { Path() }
     val ribbonPathRed = remember { Path() }
+    val deckColors = remember(theme.hardwareBody) {
+        listOf(theme.hardwareBody, Color(0xFF090A0C))
+    }
 
     LaunchedEffect(strikeTriggerId) {
         if (strikeTriggerId > 0L) {
@@ -306,10 +355,7 @@ fun TypewriterHardwareOverlay(
             val bodyTopY = cy + 62f
             drawRect(
                 brush = Brush.verticalGradient(
-                    colors = listOf(
-                        theme.hardwareBody,
-                        Color(0xFF090A0C)
-                    ),
+                    colors = deckColors,
                     startY = bodyTopY,
                     endY = size.height
                 ),
@@ -333,9 +379,9 @@ fun TypewriterHardwareOverlay(
             ribbonPathBlack.reset()
             ribbonPathBlack.apply {
                 moveTo(leftSpoolCenter.x, leftSpoolCenter.y - spoolRadius * 0.6f)
-                quadraticBezierTo(cx - 240f, ribbonBaseY + 10f, cx - 28f, ribbonBaseY)
+                quadraticTo(cx - 240f, ribbonBaseY + 10f, cx - 28f, ribbonBaseY)
                 lineTo(cx + 28f, ribbonBaseY)
-                quadraticBezierTo(cx + 240f, ribbonBaseY + 10f, rightSpoolCenter.x, rightSpoolCenter.y - spoolRadius * 0.6f)
+                quadraticTo(cx + 240f, ribbonBaseY + 10f, rightSpoolCenter.x, rightSpoolCenter.y - spoolRadius * 0.6f)
             }
             drawPath(
                 path = ribbonPathBlack,
@@ -346,9 +392,9 @@ fun TypewriterHardwareOverlay(
             ribbonPathRed.reset()
             ribbonPathRed.apply {
                 moveTo(leftSpoolCenter.x, leftSpoolCenter.y - spoolRadius * 0.6f + 12f)
-                quadraticBezierTo(cx - 240f, ribbonBaseY + 22f, cx - 28f, ribbonBaseY + 12f)
+                quadraticTo(cx - 240f, ribbonBaseY + 22f, cx - 28f, ribbonBaseY + 12f)
                 lineTo(cx + 28f, ribbonBaseY + 12f)
-                quadraticBezierTo(cx + 240f, ribbonBaseY + 22f, rightSpoolCenter.x, rightSpoolCenter.y - spoolRadius * 0.6f + 12f)
+                quadraticTo(cx + 240f, ribbonBaseY + 22f, rightSpoolCenter.x, rightSpoolCenter.y - spoolRadius * 0.6f + 12f)
             }
             drawPath(
                 path = ribbonPathRed,
@@ -696,6 +742,29 @@ fun TwilightTorchOverlay(
         }
     }
 
+    val coneColors = remember {
+        listOf(
+            Color.Black.copy(alpha = 0.96f),
+            Color.Black.copy(alpha = 0.78f),
+            Color.Black.copy(alpha = 0.35f),
+            Color.Transparent
+        )
+    }
+    val centerColors = remember {
+        listOf(
+            Color.Black.copy(alpha = 0.98f),
+            Color.Black.copy(alpha = 0.65f),
+            Color.Transparent
+        )
+    }
+    val warmthColors = remember {
+        listOf(
+            Color(0x38FFB74D).copy(alpha = 0.24f),
+            Color(0x1FFFA726).copy(alpha = 0.13f),
+            Color.Transparent
+        )
+    }
+
     Canvas(
         modifier = modifier
             .fillMaxSize()
@@ -722,45 +791,35 @@ fun TwilightTorchOverlay(
         drawPath(
             path = conePath,
             brush = Brush.radialGradient(
-                colors = listOf(
-                    Color.Black.copy(alpha = 0.96f * flickerIntensity),
-                    Color.Black.copy(alpha = 0.78f * flickerIntensity),
-                    Color.Black.copy(alpha = 0.35f * flickerIntensity),
-                    Color.Transparent
-                ),
+                colors = coneColors,
                 center = Offset(typeheadCenter.x + beamSwayX * 0.4f, typeheadCenter.y - 90f),
                 radius = maxRadius
             ),
+            alpha = flickerIntensity,
             blendMode = BlendMode.DstOut
         )
 
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(
-                    Color.Black.copy(alpha = 0.98f * flickerIntensity),
-                    Color.Black.copy(alpha = 0.65f * flickerIntensity),
-                    Color.Transparent
-                ),
+                colors = centerColors,
                 center = Offset(typeheadCenter.x, typeheadCenter.y - 20f),
                 radius = 350f * flickerIntensity
             ),
             radius = 350f * flickerIntensity,
             center = Offset(typeheadCenter.x, typeheadCenter.y - 20f),
+            alpha = flickerIntensity,
             blendMode = BlendMode.DstOut
         )
 
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(
-                    Color(0x38FFB74D).copy(alpha = 0.24f * flickerIntensity),
-                    Color(0x1FFFA726).copy(alpha = 0.13f * flickerIntensity),
-                    Color.Transparent
-                ),
+                colors = warmthColors,
                 center = Offset(typeheadCenter.x, typeheadCenter.y - 90f),
                 radius = maxRadius * 0.85f
             ),
             radius = maxRadius * 0.85f,
             center = Offset(typeheadCenter.x, typeheadCenter.y - 90f),
+            alpha = flickerIntensity,
             blendMode = BlendMode.Plus
         )
     }

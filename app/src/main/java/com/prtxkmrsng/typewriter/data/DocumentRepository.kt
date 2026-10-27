@@ -37,7 +37,7 @@ class DocumentRepository(private val context: Context) {
 
         private val BOLD_REGEX = Regex("\\*\\*(.+?)\\*\\*")
         private val STRIKE_REGEX = Regex("~~(.+?)~~")
-        private val ITALIC_REGEX = Regex("(?<!\\*)\\*([^*]+)\\*(?!\\*)")
+        private val ITALIC_REGEX = Regex("(?<!\\*)\\*([^*]+)\\*(?!\\*)|_([^_]+)_")
         private val CODE_REGEX = Regex("`([^`]+)`")
     }
 
@@ -51,8 +51,11 @@ class DocumentRepository(private val context: Context) {
     }
 
     fun saveFolderUri(uri: Uri) {
-        val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-        context.contentResolver.takePersistableUriPermission(uri, flags)
+        try {
+            val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            context.contentResolver.takePersistableUriPermission(uri, flags)
+        } catch (_: SecurityException) {
+        }
         prefs.edit().putString(KEY_FOLDER_URI, uri.toString()).apply()
     }
 
@@ -76,38 +79,47 @@ class DocumentRepository(private val context: Context) {
 
     suspend fun listMarkdownDocuments(folderUri: Uri): List<MarkdownDocument> =
         withContext(Dispatchers.IO) {
-            val root = DocumentFile.fromTreeUri(context, folderUri) ?: return@withContext emptyList()
-            root.listFiles()
-                .filter { it.isFile && (it.name?.endsWith(".md", ignoreCase = true) == true) }
-                .map {
-                    MarkdownDocument(
-                        uri = it.uri,
-                        name = it.name ?: "Untitled.md",
-                        lastModified = it.lastModified()
-                    )
-                }
-                .sortedByDescending { it.lastModified }
+            try {
+                val root = DocumentFile.fromTreeUri(context, folderUri) ?: return@withContext emptyList()
+                root.listFiles()
+                    .filter { it.isFile && (it.name?.endsWith(".md", ignoreCase = true) == true) }
+                    .map {
+                        MarkdownDocument(
+                            uri = it.uri,
+                            name = it.name ?: "Untitled.md",
+                            lastModified = it.lastModified()
+                        )
+                    }
+                    .sortedByDescending { it.lastModified }
+            } catch (_: Exception) {
+                emptyList()
+            }
         }
 
     suspend fun createNewDocument(folderUri: Uri, rawTitle: String): MarkdownDocument? =
         withContext(Dispatchers.IO) {
-            val root = DocumentFile.fromTreeUri(context, folderUri) ?: return@withContext null
-            val cleanName = rawTitle.trim()
-                .replace(Regex("[^a-zA-Z0-9._ -]"), "")
-                .ifBlank { "Untitled" }
-            val fileName = if (cleanName.endsWith(".md", ignoreCase = true)) cleanName else "$cleanName.md"
+            try {
+                val root = DocumentFile.fromTreeUri(context, folderUri) ?: return@withContext null
+                val cleanName = rawTitle.trim()
+                    .replace(Regex("[^a-zA-Z0-9._ -]"), "")
+                    .trim('.', ' ')
+                    .ifBlank { "Untitled" }
+                val fileName = if (cleanName.endsWith(".md", ignoreCase = true)) cleanName else "$cleanName.md"
 
-            val existing = root.findFile(fileName)
-            val docFile = existing ?: root.createFile("text/markdown", fileName) ?: return@withContext null
-            if (existing == null) {
-                val initialHeader = "# ${fileName.removeSuffix(".md")}\n\n"
-                writeDocumentContent(docFile.uri, initialHeader)
+                val existing = root.findFile(fileName)
+                val docFile = existing ?: root.createFile("text/markdown", fileName) ?: return@withContext null
+                if (existing == null) {
+                    val initialHeader = "# ${fileName.removeSuffixIgnoreCase(".md")}\n\n"
+                    writeDocumentContent(docFile.uri, initialHeader)
+                }
+                MarkdownDocument(
+                    uri = docFile.uri,
+                    name = docFile.name ?: fileName,
+                    lastModified = docFile.lastModified()
+                )
+            } catch (_: Exception) {
+                null
             }
-            MarkdownDocument(
-                uri = docFile.uri,
-                name = docFile.name ?: fileName,
-                lastModified = docFile.lastModified()
-            )
         }
 
     suspend fun deleteDocument(fileUri: Uri): Boolean = withContext(Dispatchers.IO) {
@@ -122,6 +134,7 @@ class DocumentRepository(private val context: Context) {
         try {
             val cleanName = rawNewTitle.trim()
                 .replace(Regex("[^a-zA-Z0-9._ -]"), "")
+                .trim('.', ' ')
                 .ifBlank { return@withContext null }
             val fileName = if (cleanName.endsWith(".md", ignoreCase = true)) cleanName else "$cleanName.md"
             DocumentsContract.renameDocument(context.contentResolver, fileUri, fileName)
@@ -158,7 +171,7 @@ class DocumentRepository(private val context: Context) {
     ): ExportedFileResult? = withContext(Dispatchers.IO) {
         try {
             val root = DocumentFile.fromTreeUri(context, folderUri) ?: return@withContext null
-            val baseName = documentName.removeSuffix(".md").removeSuffix(".MD").ifBlank { "Manuscript" }
+            val baseName = documentName.removeSuffixIgnoreCase(".md").ifBlank { "Manuscript" }
             val htmlFileName = "$baseName.html"
 
             root.findFile(htmlFileName)?.delete()
@@ -291,7 +304,7 @@ class DocumentRepository(private val context: Context) {
         val pdfDocument = PdfDocument()
         try {
             val root = DocumentFile.fromTreeUri(context, folderUri) ?: return@withContext null
-            val baseName = documentName.removeSuffix(".md").removeSuffix(".MD").ifBlank { "Manuscript" }
+            val baseName = documentName.removeSuffixIgnoreCase(".md").ifBlank { "Manuscript" }
             val pdfFileName = "$baseName.pdf"
 
             root.findFile(pdfFileName)?.delete()
@@ -335,67 +348,77 @@ class DocumentRepository(private val context: Context) {
             val charAdvance = bodyPaint.measureText("M")
             val pages = lines.chunked(linesPerPage).ifEmpty { listOf(listOf("")) }
 
-            pages.forEachIndexed { pageIndex, pageLines ->
-                val pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageIndex + 1).create()
-                val page = pdfDocument.startPage(pageInfo)
-                val canvas: Canvas = page.canvas
+            var activePage: PdfDocument.Page? = null
+            try {
+                pages.forEachIndexed { pageIndex, pageLines ->
+                    val pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageIndex + 1).create()
+                    val page = pdfDocument.startPage(pageInfo)
+                    activePage = page
+                    val canvas: Canvas = page.canvas
 
-                canvas.drawRect(0f, 0f, pageWidth.toFloat(), pageHeight.toFloat(), paperPaint)
-                canvas.drawLine(leftMargin - 12f, 0f, leftMargin - 12f, pageHeight.toFloat(), marginRulePaint)
+                    canvas.drawRect(0f, 0f, pageWidth.toFloat(), pageHeight.toFloat(), paperPaint)
+                    canvas.drawLine(leftMargin - 12f, 0f, leftMargin - 12f, pageHeight.toFloat(), marginRulePaint)
 
-                canvas.drawText(baseName.uppercase(), leftMargin, 34f, headerPaint)
-                val pageLabel = "PAGE ${pageIndex + 1} OF ${pages.size}"
-                val labelWidth = headerPaint.measureText(pageLabel)
-                canvas.drawText(pageLabel, pageWidth - leftMargin - labelWidth, 34f, headerPaint)
+                    canvas.drawText(baseName.uppercase(), leftMargin, 34f, headerPaint)
+                    val pageLabel = "PAGE ${pageIndex + 1} OF ${pages.size}"
+                    val labelWidth = headerPaint.measureText(pageLabel)
+                    canvas.drawText(pageLabel, pageWidth - leftMargin - labelWidth, 34f, headerPaint)
 
-                pageLines.forEachIndexed { lineIdx, rawLine ->
-                    val globalLineIdx = pageIndex * linesPerPage + lineIdx
-                    val y = topMargin + (lineIdx + 1) * lineHeight
-                    val trimmed = rawLine.trimStart()
-                    val cleanText = stripMarkdownTokens(rawLine)
+                    pageLines.forEachIndexed { lineIdx, rawLine ->
+                        val globalLineIdx = pageIndex * linesPerPage + lineIdx
+                        val y = topMargin + (lineIdx + 1) * lineHeight
+                        val trimmed = rawLine.trimStart()
+                        val cleanText = stripMarkdownTokens(rawLine)
 
-                    when {
-                        trimmed == "---" || trimmed == "***" -> {
-                            canvas.drawLine(
-                                leftMargin,
-                                y - 4f,
-                                pageWidth - leftMargin,
-                                y - 4f,
-                                marginRulePaint
-                            )
-                        }
-                        trimmed.startsWith("#") -> {
-                            canvas.drawText(cleanText.trimStart('#', ' '), leftMargin, y, headingPaint)
-                        }
-                        trimmed.startsWith(">") -> {
-                            canvas.drawText(cleanText.removePrefix(">").trimStart(), leftMargin + 10f, y, quotePaint)
-                        }
-                        else -> {
-                            cleanText.forEachIndexed { colIdx, ch ->
-                                if (ch != ' ') {
-                                    val hash = abs(globalLineIdx * 131 + colIdx * 37 + ch.code * 17)
-                                    val alpha = 195 + (hash % 61)
-                                    val yJitter = ((hash % 5) - 2) * 0.14f
-                                    bodyPaint.alpha = alpha
-                                    canvas.drawText(
-                                        ch.toString(),
-                                        leftMargin + colIdx * charAdvance,
-                                        y + yJitter,
-                                        bodyPaint
-                                    )
-                                }
+                        when {
+                            trimmed == "---" || trimmed == "***" -> {
+                                canvas.drawLine(
+                                    leftMargin,
+                                    y - 4f,
+                                    pageWidth - leftMargin,
+                                    y - 4f,
+                                    marginRulePaint
+                                )
                             }
-                            bodyPaint.alpha = 255
+                            trimmed.startsWith("#") -> {
+                                canvas.drawText(cleanText.trimStart('#', ' '), leftMargin, y, headingPaint)
+                            }
+                            trimmed.startsWith(">") -> {
+                                canvas.drawText(cleanText.removePrefix(">").trimStart(), leftMargin + 10f, y, quotePaint)
+                            }
+                            else -> {
+                                cleanText.forEachIndexed { colIdx, ch ->
+                                    if (ch != ' ') {
+                                        val hash = abs(globalLineIdx * 131 + colIdx * 37 + ch.code * 17)
+                                        val alpha = 195 + (hash % 61)
+                                        val yJitter = ((hash % 5) - 2) * 0.14f
+                                        bodyPaint.alpha = alpha
+                                        canvas.drawText(
+                                            cleanText,
+                                            colIdx,
+                                            colIdx + 1,
+                                            leftMargin + colIdx * charAdvance,
+                                            y + yJitter,
+                                            bodyPaint
+                                        )
+                                    }
+                                }
+                                bodyPaint.alpha = 255
+                            }
                         }
                     }
+
+                    // Footer credit
+                    val footerSig = "TYPED ON TYPEWRITER • @prtxkmrsng"
+                    val sigWidth = headerPaint.measureText(footerSig)
+                    canvas.drawText(footerSig, pageWidth - leftMargin - sigWidth, pageHeight - 24f, headerPaint)
+
+                    pdfDocument.finishPage(page)
+                    activePage = null
                 }
-
-                // Footer credit
-                val footerSig = "TYPED ON TYPEWRITER • @prtxkmrsng"
-                val sigWidth = headerPaint.measureText(footerSig)
-                canvas.drawText(footerSig, pageWidth - leftMargin - sigWidth, pageHeight - 24f, headerPaint)
-
-                pdfDocument.finishPage(page)
+            } catch (pageEx: Exception) {
+                activePage?.let { runCatching { pdfDocument.finishPage(it) } }
+                throw pageEx
             }
 
             context.contentResolver.openOutputStream(pdfFile.uri, "w")?.use { out ->
@@ -406,12 +429,15 @@ class DocumentRepository(private val context: Context) {
                 uri = pdfFile.uri,
                 mimeType = "application/pdf"
             )
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         } finally {
-            pdfDocument.close()
+            runCatching { pdfDocument.close() }
         }
     }
+
+    private fun String.removeSuffixIgnoreCase(suffix: String): String =
+        if (endsWith(suffix, ignoreCase = true)) substring(0, length - suffix.length) else this
 
     private fun escapeHtml(text: String): String =
         text.replace("&", "&amp;")
@@ -422,7 +448,10 @@ class DocumentRepository(private val context: Context) {
         var html = escapeHtml(raw)
         html = html.replace(BOLD_REGEX, "<strong>$1</strong>")
         html = html.replace(STRIKE_REGEX, "<del>$1</del>")
-        html = html.replace(ITALIC_REGEX, "<em>$1</em>")
+        html = html.replace(ITALIC_REGEX) { match ->
+            val content = match.groupValues[1].ifEmpty { match.groupValues[2] }
+            "<em>$content</em>"
+        }
         html = html.replace(CODE_REGEX, "<code>$1</code>")
         return html
     }
@@ -431,7 +460,7 @@ class DocumentRepository(private val context: Context) {
         return raw
             .replace(BOLD_REGEX, "$1")
             .replace(STRIKE_REGEX, "$1")
-            .replace(ITALIC_REGEX, "$1")
+            .replace(ITALIC_REGEX) { match -> match.groupValues[1].ifEmpty { match.groupValues[2] } }
             .replace(CODE_REGEX, "$1")
     }
 }

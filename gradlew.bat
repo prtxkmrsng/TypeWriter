@@ -55,7 +55,17 @@ goto fail
 
 :findJavaFromJavaHome
 set JAVA_HOME=%JAVA_HOME:"=%
-set JAVA_EXE=%JAVA_HOME%/bin/java.exe
+set JAVA_EXE=%JAVA_HOME%\bin\java.exe
+
+if not exist "%JAVA_EXE%" if exist "C:\Users\emper\.gradle\jdks\jetbrains_s_r_o_-21-amd64-windows.2\bin\java.exe" (
+    set "JAVA_HOME=C:\Users\emper\.gradle\jdks\jetbrains_s_r_o_-21-amd64-windows.2"
+    set "JAVA_EXE=C:\Users\emper\.gradle\jdks\jetbrains_s_r_o_-21-amd64-windows.2\bin\java.exe"
+)
+
+if not exist "%JAVA_EXE%" if exist "C:\Users\emper\AppData\Local\Programs\PyCharm\jbr\bin\java.exe" (
+    set "JAVA_HOME=C:\Users\emper\AppData\Local\Programs\PyCharm\jbr"
+    set "JAVA_EXE=C:\Users\emper\AppData\Local\Programs\PyCharm\jbr\bin\java.exe"
+)
 
 if exist "%JAVA_EXE%" goto execute
 

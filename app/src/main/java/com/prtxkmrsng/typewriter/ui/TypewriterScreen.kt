@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -43,6 +44,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -60,6 +62,14 @@ import com.prtxkmrsng.typewriter.data.ExportedFileResult
 import com.prtxkmrsng.typewriter.data.MarkdownDocument
 import kotlinx.coroutines.delay
 import kotlin.math.floor
+
+private data class OverstrikeCacheKey(
+    val lineIndex: Int,
+    val strikeIndex: Int,
+    val colIndex: Int,
+    val char: Char,
+    val inkColorBits: Long
+)
 
 private fun shareExportedManuscript(context: Context, exported: ExportedFileResult) {
     val shareIntent = Intent(Intent.ACTION_SEND).apply {
@@ -417,7 +427,7 @@ private fun TypewriterWorkspace(
                     }
                 }
             }
-            .pointerInput(Unit) {
+            .pointerInput(lineHeightPx) {
                 var accumulatedDrag = 0f
                 detectVerticalDragGestures { _, dragAmount ->
                     isActivelyTyping = false
@@ -451,6 +461,15 @@ private fun TypewriterWorkspace(
                 color = theme.inkColor.copy(alpha = 0.42f)
             )
         }
+        val pageHeaderGradientColors = remember {
+            listOf(
+                Color.Black.copy(alpha = 0.06f),
+                Color.Transparent
+            )
+        }
+        val overstrikeCache = remember {
+            SimpleLruCache<OverstrikeCacheKey, AnnotatedString>(256)
+        }
 
         Canvas(modifier = Modifier.fillMaxSize()) {
             val pagesToDraw = (totalPages + 1).coerceAtLeast(2)
@@ -477,10 +496,7 @@ private fun TypewriterWorkspace(
 
                 drawRect(
                     brush = Brush.verticalGradient(
-                        colors = listOf(
-                            Color.Black.copy(alpha = 0.06f),
-                            Color.Transparent
-                        ),
+                        colors = pageHeaderGradientColors,
                         startY = pageTopY,
                         endY = pageTopY + pageHeaderPx
                     ),
@@ -577,17 +593,26 @@ private fun TypewriterWorkspace(
                 lineOverstrikes?.forEach { (colIdx, oldChars) ->
                     val cellX = textStartX + (colIdx * charWidthPx)
                     oldChars.forEachIndexed { strikeIdx, oldChar ->
-                        val overstrikeAnnotated = buildAnnotatedString {
-                            withStyle(
-                                computeMechanicalCharStyle(
-                                    lineIndex = lineIdx + strikeIdx + 1,
-                                    colIndex = colIdx,
-                                    char = oldChar,
-                                    targetInkColor = theme.inkColor.copy(alpha = 0.78f)
-                                )
-                            ) {
-                                append(oldChar)
-                            }
+                        val cacheKey = OverstrikeCacheKey(
+                            lineIndex = lineIdx,
+                            strikeIndex = strikeIdx,
+                            colIndex = colIdx,
+                            char = oldChar,
+                            inkColorBits = theme.inkColor.value.toLong()
+                        )
+                        val overstrikeAnnotated = synchronized(overstrikeCache) {
+                            overstrikeCache[cacheKey] ?: buildAnnotatedString {
+                                withStyle(
+                                    computeMechanicalCharStyle(
+                                        lineIndex = lineIdx + strikeIdx + 1,
+                                        colIndex = colIdx,
+                                        char = oldChar,
+                                        targetInkColor = theme.inkColor.copy(alpha = 0.78f)
+                                    )
+                                ) {
+                                    append(oldChar)
+                                }
+                            }.also { overstrikeCache[cacheKey] = it }
                         }
                         val charLayout = textMeasurer.measure(
                             text = overstrikeAnnotated,
@@ -789,7 +814,7 @@ private fun TopTypewriterHud(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onToggleDrawer) {
-                    Icon(Icons.Default.MenuBook, contentDescription = "Manuscripts")
+                    Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = "Manuscripts")
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Column {
@@ -915,13 +940,13 @@ private fun TopTypewriterHud(
 
                 IconButton(onClick = onToggleMute) {
                     Icon(
-                        imageVector = if (state.isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                        imageVector = if (state.isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
                         contentDescription = "Toggle Typewriter Sound"
                     )
                 }
 
                 IconButton(onClick = onNewDocument) {
-                    Icon(Icons.Default.NoteAdd, contentDescription = "New Manuscript")
+                    Icon(Icons.AutoMirrored.Filled.NoteAdd, contentDescription = "New Manuscript")
                 }
 
                 IconButton(onClick = onShowDeveloperInfo) {
