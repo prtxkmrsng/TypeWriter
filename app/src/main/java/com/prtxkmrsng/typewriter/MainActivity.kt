@@ -1,5 +1,6 @@
 package com.prtxkmrsng.typewriter
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -13,15 +14,34 @@ import com.prtxkmrsng.typewriter.ui.TypewriterViewModel
 
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        const val EXTRA_OPEN_DOCUMENT_URI = "extra_open_document_uri"
+    }
+
     private val viewModel: TypewriterViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         hideSystemBars()
+        handleBookWidgetIntent(intent)
 
         setContent {
             TypewriterRootScreen(viewModel = viewModel)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleBookWidgetIntent(intent)
+    }
+
+    private fun handleBookWidgetIntent(intent: Intent?) {
+        val docUriString = intent?.getStringExtra(EXTRA_OPEN_DOCUMENT_URI)
+        if (!docUriString.isNullOrBlank()) {
+            viewModel.openDocumentByUriString(docUriString)
+            intent.removeExtra(EXTRA_OPEN_DOCUMENT_URI)
         }
     }
 
@@ -34,7 +54,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
-        // Guarantee any debounced keystrokes are flushed to the .md file immediately
         viewModel.flushPendingSave()
     }
 

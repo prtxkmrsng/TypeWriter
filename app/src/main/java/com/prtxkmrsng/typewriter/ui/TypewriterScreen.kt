@@ -24,7 +24,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -44,7 +43,6 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -62,14 +60,6 @@ import com.prtxkmrsng.typewriter.data.ExportedFileResult
 import com.prtxkmrsng.typewriter.data.MarkdownDocument
 import kotlinx.coroutines.delay
 import kotlin.math.floor
-
-private data class OverstrikeCacheKey(
-    val lineIndex: Int,
-    val strikeIndex: Int,
-    val colIndex: Int,
-    val char: Char,
-    val inkColorBits: Long
-)
 
 private fun shareExportedManuscript(context: Context, exported: ExportedFileResult) {
     val shareIntent = Intent(Intent.ACTION_SEND).apply {
@@ -208,12 +198,16 @@ private fun TypewriterWorkspace(
     LaunchedEffect(state.strikeTriggerId) {
         if (state.strikeTriggerId > 0L) {
             isActivelyTyping = true
+            // Automatically tuck away the top bookshelf drawer when the user starts typing
+            if (state.isBookshelfOpen) {
+                viewModel.closeBookshelfDrawer()
+            }
             delay(2600L)
             isActivelyTyping = false
         }
     }
     val hudAlpha by animateFloatAsState(
-        targetValue = if (isActivelyTyping && !isDrawerOpen && !state.isPreviewMode) 0.32f else 1f,
+        targetValue = if (isActivelyTyping && !isDrawerOpen && !state.isBookshelfOpen && !state.isPreviewMode) 0.32f else 1f,
         animationSpec = tween(durationMillis = 450),
         label = "HudAlpha"
     )
@@ -221,7 +215,6 @@ private fun TypewriterWorkspace(
     val textMeasurer = rememberTextMeasurer(cacheSize = 256)
     val density = LocalDensity.current
 
-    // Subpixel-accurate character width measured across 100 monospace characters
     val charWidthPx = remember(density, density.density, density.fontScale) {
         val sampleCount = 100
         val layout = textMeasurer.measure(
@@ -264,8 +257,6 @@ private fun TypewriterWorkspace(
     val activeInk = if (state.isRedRibbon) theme.accentRibbonRed else theme.inkColor
     val currentLineText = state.lines.getOrNull(state.cursorLine).orEmpty()
 
-    // Exact pixel width of the characters preceding cursorCol on the active line,
-    // measured with the exact same styled AnnotatedString used to draw the line.
     val activePrefixWidthPx = remember(
         state.cursorLine,
         state.cursorCol,
@@ -298,7 +289,6 @@ private fun TypewriterWorkspace(
     val targetPaperLeftX = typeheadCenter.x - paperHorizontalPaddingPx - activePrefixWidthPx
     val targetPaperTopY = typeheadCenter.y - lineYInPaperRoll(state.cursorLine) - (lineHeightPx * 0.75f)
 
-    // Instantaneous 25ms escapement step when typing characters; smooth slide on Carriage Return
     val animatedPaperX by animateFloatAsState(
         targetValue = targetPaperLeftX,
         animationSpec = if (state.cursorCol == 0) {
@@ -318,7 +308,7 @@ private fun TypewriterWorkspace(
         label = "PlatenRollY"
     )
 
-    LaunchedEffect(Unit, isDrawerOpen, showNewDocDialog, docToRename, showDeveloperInfoDialog, state.isPreviewMode) {
+    LaunchedEffect(Unit, isDrawerOpen, showNewDocDialog, docToRename, showDeveloperInfoDialog, state.isPreviewMode, state.isBookshelfOpen) {
         if (!isDrawerOpen && !showNewDocDialog && docToRename == null && !showDeveloperInfoDialog && !state.isPreviewMode) {
             focusRequester.requestFocus()
         }
@@ -334,9 +324,17 @@ private fun TypewriterWorkspace(
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
 
-                if (event.key == Key.Escape && state.isPreviewMode) {
-                    viewModel.togglePreviewMode()
-                    return@onPreviewKeyEvent true
+                if (event.key == Key.Escape) {
+                    when {
+                        state.isPreviewMode -> {
+                            viewModel.togglePreviewMode()
+                            return@onPreviewKeyEvent true
+                        }
+                        state.isBookshelfOpen -> {
+                            viewModel.closeBookshelfDrawer()
+                            return@onPreviewKeyEvent true
+                        }
+                    }
                 }
 
                 if (event.isCtrlPressed) {
@@ -347,6 +345,10 @@ private fun TypewriterWorkspace(
                         }
                         Key.P -> {
                             viewModel.togglePreviewMode()
+                            return@onPreviewKeyEvent true
+                        }
+                        Key.B -> {
+                            viewModel.toggleBookshelfDrawer()
                             return@onPreviewKeyEvent true
                         }
                         Key.N -> {
@@ -427,7 +429,7 @@ private fun TypewriterWorkspace(
                     }
                 }
             }
-            .pointerInput(lineHeightPx) {
+            .pointerInput(Unit) {
                 var accumulatedDrag = 0f
                 detectVerticalDragGestures { _, dragAmount ->
                     isActivelyTyping = false
@@ -446,10 +448,12 @@ private fun TypewriterWorkspace(
                 interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
             ) {
                 isActivelyTyping = false
+                if (state.isBookshelfOpen) {
+                    viewModel.closeBookshelfDrawer()
+                }
                 focusRequester.requestFocus()
             }
     ) {
-        // 1 & 2. UNIFIED PAPER ROLL + DIRECT CANVAS TEXT RENDERER (Zero Box/Constraint Drift)
         val perforationDash = remember {
             PathEffect.dashPathEffect(floatArrayOf(12f, 8f), 0f)
         }
@@ -461,23 +465,14 @@ private fun TypewriterWorkspace(
                 color = theme.inkColor.copy(alpha = 0.42f)
             )
         }
-        val pageHeaderGradientColors = remember {
-            listOf(
-                Color.Black.copy(alpha = 0.06f),
-                Color.Transparent
-            )
-        }
-        val overstrikeCache = remember {
-            SimpleLruCache<OverstrikeCacheKey, AnnotatedString>(256)
-        }
 
+        // 1 & 2. UNIFIED PAPER ROLL + DIRECT CANVAS TEXT RENDERER
         Canvas(modifier = Modifier.fillMaxSize()) {
             val pagesToDraw = (totalPages + 1).coerceAtLeast(2)
             val firstVisiblePage = floor((-animatedPaperY - 120f) / pageStridePx).toInt().coerceAtLeast(0)
             val lastVisiblePage = floor((size.height - animatedPaperY + 120f) / pageStridePx).toInt()
                 .coerceAtMost(pagesToDraw - 1)
 
-            // A. Draw Perforated Paper Sheets
             for (pageIdx in firstVisiblePage..lastVisiblePage) {
                 val pageTopY = animatedPaperY + (pageIdx * pageStridePx)
                 val pageBottomY = pageTopY + pageStridePx
@@ -496,7 +491,10 @@ private fun TypewriterWorkspace(
 
                 drawRect(
                     brush = Brush.verticalGradient(
-                        colors = pageHeaderGradientColors,
+                        colors = listOf(
+                            Color.Black.copy(alpha = 0.06f),
+                            Color.Transparent
+                        ),
                         startY = pageTopY,
                         endY = pageTopY + pageHeaderPx
                     ),
@@ -557,7 +555,6 @@ private fun TypewriterWorkspace(
                 )
             }
 
-            // B. Draw Visible Markdown Lines & Hardcore Overstrikes Directly on the Paper Canvas
             val textStartX = animatedPaperX + paperHorizontalPaddingPx
             val approxFirstPage = floor((-animatedPaperY - lineHeightPx * 3f) / pageStridePx).toInt().coerceAtLeast(0)
             val approxLastPage = floor((size.height - animatedPaperY + lineHeightPx * 3f) / pageStridePx).toInt().coerceAtLeast(0)
@@ -588,31 +585,21 @@ private fun TypewriterWorkspace(
                     )
                 }
 
-                // Draw Hardcore Mode overstrike characters on this line
                 val lineOverstrikes = state.overstrikesByLine[lineIdx]
                 lineOverstrikes?.forEach { (colIdx, oldChars) ->
                     val cellX = textStartX + (colIdx * charWidthPx)
                     oldChars.forEachIndexed { strikeIdx, oldChar ->
-                        val cacheKey = OverstrikeCacheKey(
-                            lineIndex = lineIdx,
-                            strikeIndex = strikeIdx,
-                            colIndex = colIdx,
-                            char = oldChar,
-                            inkColorBits = theme.inkColor.value.toLong()
-                        )
-                        val overstrikeAnnotated = synchronized(overstrikeCache) {
-                            overstrikeCache[cacheKey] ?: buildAnnotatedString {
-                                withStyle(
-                                    computeMechanicalCharStyle(
-                                        lineIndex = lineIdx + strikeIdx + 1,
-                                        colIndex = colIdx,
-                                        char = oldChar,
-                                        targetInkColor = theme.inkColor.copy(alpha = 0.78f)
-                                    )
-                                ) {
-                                    append(oldChar)
-                                }
-                            }.also { overstrikeCache[cacheKey] = it }
+                        val overstrikeAnnotated = buildAnnotatedString {
+                            withStyle(
+                                computeMechanicalCharStyle(
+                                    lineIndex = lineIdx + strikeIdx + 1,
+                                    colIndex = colIdx,
+                                    char = oldChar,
+                                    targetInkColor = theme.inkColor.copy(alpha = 0.78f)
+                                )
+                            ) {
+                                append(oldChar)
+                            }
                         }
                         val charLayout = textMeasurer.measure(
                             text = overstrikeAnnotated,
@@ -661,32 +648,67 @@ private fun TypewriterWorkspace(
             )
         }
 
-        // 5. TOP MINIMALIST HUD BAR
-        TopTypewriterHud(
-            state = state,
-            currentPage = currentPage,
-            totalPages = totalPages,
-            lineInPage = lineInPage,
-            onToggleDrawer = {
-                isActivelyTyping = false
-                isDrawerOpen = !isDrawerOpen
-            },
-            onNewDocument = {
-                isActivelyTyping = false
-                showNewDocDialog = true
-            },
-            onToggleHardcore = viewModel::toggleHardcoreMode,
-            onTogglePreview = viewModel::togglePreviewMode,
-            onToggleMute = viewModel::toggleMute,
-            onSelectTheme = viewModel::setTheme,
-            onShowDeveloperInfo = {
-                isActivelyTyping = false
-                showDeveloperInfoDialog = true
-            },
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .alpha(hudAlpha)
-        )
+        // 5. TOP HUD + TOP-MIDDLE PULL-DOWN BOOKSHELF CAROUSEL DRAWER
+        if (!state.isPreviewMode) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                TopTypewriterHud(
+                    state = state,
+                    currentPage = currentPage,
+                    totalPages = totalPages,
+                    lineInPage = lineInPage,
+                    onToggleDrawer = {
+                        isActivelyTyping = false
+                        isDrawerOpen = !isDrawerOpen
+                    },
+                    onToggleBookshelf = {
+                        isActivelyTyping = false
+                        viewModel.toggleBookshelfDrawer()
+                    },
+                    onNewDocument = {
+                        isActivelyTyping = false
+                        showNewDocDialog = true
+                    },
+                    onToggleHardcore = viewModel::toggleHardcoreMode,
+                    onTogglePreview = viewModel::togglePreviewMode,
+                    onToggleMute = viewModel::toggleMute,
+                    onSelectTheme = viewModel::setTheme,
+                    onShowDeveloperInfo = {
+                        isActivelyTyping = false
+                        showDeveloperInfoDialog = true
+                    },
+                    modifier = Modifier.alpha(hudAlpha)
+                )
+
+                // Top-Middle Pull-Down Bookshelf Carousel Drawer (Never overlaps the Top HUD!)
+                BookshelfTopDrawer(
+                    isOpen = state.isBookshelfOpen,
+                    theme = theme,
+                    documents = state.documents,
+                    activeDocumentUri = state.activeDocument?.uri,
+                    onToggleOpen = {
+                        isActivelyTyping = false
+                        viewModel.toggleBookshelfDrawer()
+                    },
+                    onSelectBook = { doc ->
+                        viewModel.openDocument(doc)
+                        viewModel.closeBookshelfDrawer()
+                        focusRequester.requestFocus()
+                    },
+                    onAddBook = {
+                        showNewDocDialog = true
+                    },
+                    onPageFlipSound = {
+                        viewModel.soundEngine.playPlatenTick()
+                    },
+                    modifier = Modifier.alpha(hudAlpha)
+                )
+            }
+        }
 
         // 6. VIRTUALIZED READ / PREVIEW MANUSCRIPT MODAL SHEET
         AnimatedVisibility(
@@ -785,6 +807,7 @@ private fun TopTypewriterHud(
     totalPages: Int,
     lineInPage: Int,
     onToggleDrawer: () -> Unit,
+    onToggleBookshelf: () -> Unit,
     onNewDocument: () -> Unit,
     onToggleHardcore: () -> Unit,
     onTogglePreview: () -> Unit,
@@ -799,7 +822,7 @@ private fun TopTypewriterHud(
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 12.dp),
+            .padding(start = 20.dp, end = 20.dp, top = 12.dp),
         color = theme.hudBackground,
         contentColor = theme.hudText,
         shape = RoundedCornerShape(10.dp),
@@ -814,19 +837,19 @@ private fun TopTypewriterHud(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onToggleDrawer) {
-                    Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = "Manuscripts")
+                    Icon(Icons.Default.MenuBook, contentDescription = "Manuscripts")
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Column {
                     Text(
-                        text = state.activeDocument?.name ?: "Untitled.md",
+                        text = state.activeDocument?.name ?: "Unbound Sheet (Type or + to bind)",
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.Bold,
                         fontSize = 15.sp
                     )
                     Text(
                         text = when (state.saveStatus) {
-                            SaveStatus.SAVED -> "PAGE $currentPage/$totalPages (LINE $lineInPage/${state.linesPerPage}) • ${state.wordCount} WORDS • COL ${state.cursorCol}/${state.maxCharsPerLine}"
+                            SaveStatus.SAVED -> "PAGE $currentPage/$totalPages (LINE $lineInPage/${state.linesPerPage}) • ${state.wordCount} WORDS • ${state.documents.size} BOOKS"
                             SaveStatus.SAVING -> "SAVING TO DISK..."
                             SaveStatus.UNSAVED -> "TYPING • PAGE $currentPage/$totalPages (LINE $lineInPage/${state.linesPerPage})"
                         },
@@ -841,6 +864,30 @@ private fun TopTypewriterHud(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
+                FilterChip(
+                    selected = state.isBookshelfOpen,
+                    onClick = onToggleBookshelf,
+                    label = {
+                        Text(
+                            text = "SHELF (${state.documents.size})",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.AutoStories,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp)
+                        )
+                    },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = Color(0xFF6B4423),
+                        selectedLabelColor = Color(0xFFF5E6C4),
+                        labelColor = theme.hudText
+                    )
+                )
+
                 FilterChip(
                     selected = state.isHardcoreMode,
                     onClick = onToggleHardcore,
@@ -940,13 +987,13 @@ private fun TopTypewriterHud(
 
                 IconButton(onClick = onToggleMute) {
                     Icon(
-                        imageVector = if (state.isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                        imageVector = if (state.isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
                         contentDescription = "Toggle Typewriter Sound"
                     )
                 }
 
                 IconButton(onClick = onNewDocument) {
-                    Icon(Icons.AutoMirrored.Filled.NoteAdd, contentDescription = "New Manuscript")
+                    Icon(Icons.Default.NoteAdd, contentDescription = "New Manuscript")
                 }
 
                 IconButton(onClick = onShowDeveloperInfo) {
@@ -1484,7 +1531,7 @@ private fun DeveloperInfoDialog(onDismiss: () -> Unit) {
                             color = Color(0xFFD5CCB8)
                         )
                         Text(
-                            text = "• Shortcuts: Ctrl+S Save | Ctrl+P Preview | Ctrl+N New",
+                            text = "• Shortcuts: Ctrl+S Save | Ctrl+B Bookshelf | Ctrl+P Preview",
                             fontFamily = FontFamily.Monospace,
                             fontSize = 11.sp,
                             color = Color(0xFFD5CCB8)
@@ -1649,13 +1696,21 @@ private fun ManuscriptSidebar(
                                     tint = if (isSelected) Color(0xFFE6C891) else Color(0xFF8E8A80)
                                 )
                                 Spacer(modifier = Modifier.width(10.dp))
-                                Text(
-                                    text = doc.name,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 13.sp,
-                                    maxLines = 1,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                )
+                                Column {
+                                    Text(
+                                        text = doc.name,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 13.sp,
+                                        maxLines = 1,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                    Text(
+                                        text = "${doc.pageCount} ${if (doc.pageCount == 1) "page" else "pages"} • ${doc.wordCount} words",
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 10.sp,
+                                        color = Color(0xFF9E998E)
+                                    )
+                                }
                             }
 
                             Row {
@@ -1733,7 +1788,7 @@ private fun NewManuscriptDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                text = "Insert Fresh Markdown Sheet",
+                text = "Bind New Manuscript Volume",
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold
             )
@@ -1742,14 +1797,14 @@ private fun NewManuscriptDialog(
             OutlinedTextField(
                 value = title,
                 onValueChange = { title = it },
-                label = { Text("Manuscript Title (e.g., Chapter 1)", fontFamily = FontFamily.Monospace) },
+                label = { Text("Book / Note Title (e.g., Chapter 1)", fontFamily = FontFamily.Monospace) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
         },
         confirmButton = {
             Button(onClick = { onCreate(title.ifBlank { "Untitled" }) }) {
-                Text("Insert Paper", fontFamily = FontFamily.Monospace)
+                Text("Bind Book", fontFamily = FontFamily.Monospace)
             }
         },
         dismissButton = {
@@ -1772,7 +1827,7 @@ private fun RenameManuscriptDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                text = "Rename Manuscript",
+                text = "Rename Manuscript Spine",
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold
             )
@@ -1781,7 +1836,7 @@ private fun RenameManuscriptDialog(
             OutlinedTextField(
                 value = title,
                 onValueChange = { title = it },
-                label = { Text("New Title", fontFamily = FontFamily.Monospace) },
+                label = { Text("New Spine Title", fontFamily = FontFamily.Monospace) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )

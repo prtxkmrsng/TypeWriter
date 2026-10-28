@@ -9,6 +9,7 @@ import com.prtxkmrsng.typewriter.audio.TypewriterSoundEngine
 import com.prtxkmrsng.typewriter.data.DocumentRepository
 import com.prtxkmrsng.typewriter.data.ExportedFileResult
 import com.prtxkmrsng.typewriter.data.MarkdownDocument
+import com.prtxkmrsng.typewriter.widget.BookshelfAppWidgetProvider
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,7 +26,6 @@ data class TypewriterUiState(
     val documents: List<MarkdownDocument> = emptyList(),
     val activeDocument: MarkdownDocument? = null,
     val lines: List<String> = listOf(""),
-    // O(1) lookup by lineIndex -> (colIndex -> list of overstruck chars)
     val overstrikesByLine: Map<Int, Map<Int, List<Char>>> = emptyMap(),
     val cursorLine: Int = 0,
     val cursorCol: Int = 0,
@@ -36,6 +36,7 @@ data class TypewriterUiState(
     val isRedRibbon: Boolean = false,
     val isHardcoreMode: Boolean = false,
     val isPreviewMode: Boolean = false,
+    val isBookshelfOpen: Boolean = false,
     val isMuted: Boolean = false,
     val saveStatus: SaveStatus = SaveStatus.SAVED,
     val strikeTriggerId: Long = 0L,
@@ -55,6 +56,7 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
     val uiState: StateFlow<TypewriterUiState> = _uiState.asStateFlow()
 
     private var autosaveJob: Job? = null
+    private var pendingDeepLinkUriString: String? = null
 
     init {
         val savedTheme = runCatching {
@@ -63,12 +65,14 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
 
         val savedFolder = repository.getSavedFolderUri()
         val hardcore = repository.getHardcoreMode()
+        val shelfOpen = repository.getBookshelfOpen()
 
         _uiState.update {
             it.copy(
                 folderUri = savedFolder,
                 themeMode = savedTheme,
-                isHardcoreMode = hardcore
+                isHardcoreMode = hardcore,
+                isBookshelfOpen = shelfOpen
             )
         }
 
@@ -82,9 +86,6 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
         soundEngine.release()
     }
 
-    /**
-     * Immediately flushes any pending unsaved changes when the app is paused/stopped.
-     */
     fun flushPendingSave() {
         if (_uiState.value.saveStatus == SaveStatus.UNSAVED) {
             autosaveJob?.cancel()
@@ -102,6 +103,38 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    fun toggleBookshelfDrawer() {
+        val next = !_uiState.value.isBookshelfOpen
+        repository.saveBookshelfOpen(next)
+        soundEngine.playPlatenTick()
+        _uiState.update { it.copy(isBookshelfOpen = next) }
+    }
+
+    fun closeBookshelfDrawer() {
+        if (_uiState.value.isBookshelfOpen) {
+            repository.saveBookshelfOpen(false)
+            _uiState.update { it.copy(isBookshelfOpen = false) }
+        }
+    }
+
+    /**
+     * Opens a specific note when its book spine is clicked on the Android Home Screen Widget.
+     */
+    fun openDocumentByUriString(uriString: String) {
+        val targetUri = runCatching { Uri.parse(uriString) }.getOrNull() ?: return
+        val existingDoc = _uiState.value.documents.find { it.uri == targetUri }
+        if (existingDoc != null) {
+            closeBookshelfDrawer()
+            openDocument(existingDoc)
+        } else {
+            pendingDeepLinkUriString = uriString
+            val folderUri = _uiState.value.folderUri ?: repository.getSavedFolderUri()
+            if (folderUri != null) {
+                refreshDocumentsAndLoadInitial(folderUri)
+            }
+        }
+    }
+
     fun onFolderSelected(uri: Uri) {
         repository.saveFolderUri(uri)
         _uiState.update { it.copy(folderUri = uri) }
@@ -112,54 +145,72 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             val docs = repository.listMarkdownDocuments(folderUri)
             if (docs.isEmpty()) {
-                val created = repository.createNewDocument(folderUri, "First Draft.md")
-                val updatedDocs = repository.listMarkdownDocuments(folderUri)
-                _uiState.update { it.copy(documents = updatedDocs) }
-                created?.let { openDocument(it) }
+                _uiState.update {
+                    it.copy(
+                        documents = emptyList(),
+                        activeDocument = null,
+                        lines = listOf(""),
+                        cursorLine = 0,
+                        cursorCol = 0,
+                        wordCount = 0,
+                        charCount = 0
+                    )
+                }
             } else {
                 _uiState.update { it.copy(documents = docs) }
-                val lastUri = repository.getLastDocUri()
+                val deepLinkUri = pendingDeepLinkUriString?.let { Uri.parse(it) }
+                pendingDeepLinkUriString = null
+                val lastUri = deepLinkUri ?: repository.getLastDocUri()
                 val targetDoc = docs.find { it.uri == lastUri } ?: docs.first()
                 openDocument(targetDoc)
             }
+            BookshelfAppWidgetProvider.notifyWidgetsChanged(getApplication())
         }
     }
 
     fun createNewDocument(title: String) {
-        autosaveJob?.cancel()
         val folderUri = _uiState.value.folderUri ?: return
         viewModelScope.launch {
             saveCurrentImmediately()
             val newDoc = repository.createNewDocument(folderUri, title) ?: return@launch
             val docs = repository.listMarkdownDocuments(folderUri)
-            _uiState.update { it.copy(documents = docs) }
+            _uiState.update { it.copy(documents = docs, isBookshelfOpen = false) }
+            repository.saveBookshelfOpen(false)
             openDocument(newDoc)
+            BookshelfAppWidgetProvider.notifyWidgetsChanged(getApplication())
         }
     }
 
     fun deleteDocument(doc: MarkdownDocument) {
-        autosaveJob?.cancel()
         val folderUri = _uiState.value.folderUri ?: return
         viewModelScope.launch {
             val isDeletingActive = _uiState.value.activeDocument?.uri == doc.uri
             repository.deleteDocument(doc.uri)
             val remainingDocs = repository.listMarkdownDocuments(folderUri)
             if (remainingDocs.isEmpty()) {
-                val fresh = repository.createNewDocument(folderUri, "Untitled.md")
-                val refreshed = repository.listMarkdownDocuments(folderUri)
-                _uiState.update { it.copy(documents = refreshed) }
-                fresh?.let { openDocument(it) }
+                _uiState.update {
+                    it.copy(
+                        documents = emptyList(),
+                        activeDocument = null,
+                        lines = listOf(""),
+                        overstrikesByLine = emptyMap(),
+                        cursorLine = 0,
+                        cursorCol = 0,
+                        wordCount = 0,
+                        charCount = 0
+                    )
+                }
             } else {
                 _uiState.update { it.copy(documents = remainingDocs) }
                 if (isDeletingActive) {
                     openDocument(remainingDocs.first())
                 }
             }
+            BookshelfAppWidgetProvider.notifyWidgetsChanged(getApplication())
         }
     }
 
     fun renameDocument(doc: MarkdownDocument, newTitle: String) {
-        autosaveJob?.cancel()
         val folderUri = _uiState.value.folderUri ?: return
         viewModelScope.launch {
             saveCurrentImmediately()
@@ -175,11 +226,11 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
             if (renamedDoc != null) {
                 repository.saveLastDocUri(renamedDoc.uri)
             }
+            BookshelfAppWidgetProvider.notifyWidgetsChanged(getApplication())
         }
     }
 
     fun openDocument(doc: MarkdownDocument) {
-        autosaveJob?.cancel()
         viewModelScope.launch {
             saveCurrentImmediately()
             val rawText = repository.readDocumentContent(doc.uri)
@@ -187,28 +238,35 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
             val parsedLines = parseTextToTypewriterLines(rawText, _uiState.value.maxCharsPerLine)
             val lastLineIndex = (parsedLines.size - 1).coerceAtLeast(0)
             val lastColIndex = parsedLines[lastLineIndex].length
+            val livePages = ((parsedLines.size - 1).coerceAtLeast(0) / _uiState.value.linesPerPage) + 1
+            val liveWords = countWordsFast(parsedLines)
 
-            _uiState.update {
-                it.copy(
-                    activeDocument = doc,
+            val updatedDoc = doc.copy(pageCount = livePages, wordCount = liveWords)
+
+            _uiState.update { state ->
+                state.copy(
+                    activeDocument = updatedDoc,
+                    documents = state.documents.map { if (it.uri == updatedDoc.uri) updatedDoc else it },
                     lines = parsedLines,
                     overstrikesByLine = emptyMap(),
                     cursorLine = lastLineIndex,
                     cursorCol = lastColIndex,
                     saveStatus = SaveStatus.SAVED,
-                    wordCount = countWordsFast(parsedLines),
+                    wordCount = liveWords,
                     charCount = parsedLines.sumOf { line -> line.length },
                     exportStatusMessage = null,
                     lastExportedFile = null
                 )
             }
             soundEngine.playCarriageReturn()
+            BookshelfAppWidgetProvider.notifyWidgetsChanged(getApplication())
         }
     }
 
     fun setTheme(theme: TypewriterThemeMode) {
         repository.saveThemeName(theme.name)
         _uiState.update { it.copy(themeMode = theme) }
+        BookshelfAppWidgetProvider.notifyWidgetsChanged(getApplication())
     }
 
     fun toggleRibbonColor() {
@@ -342,7 +400,6 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
                 setCharAt(colIdx, char)
             }.toString()
         } else {
-            updatedOverstrikes = shiftOverstrikesOnCharInsert(updatedOverstrikes, lineIdx, colIdx)
             updatedLine = StringBuilder(currentLine).apply {
                 insert(colIdx, char)
             }.toString()
@@ -350,13 +407,11 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
 
         if (updatedLine.length > state.maxCharsPerLine) {
             val lastSpace = updatedLine.lastIndexOf(' ', startIndex = state.maxCharsPerLine - 1)
-            val isSpaceWrap = lastSpace > state.maxCharsPerLine / 2
-            val (keptLine, carryOver) = if (isSpaceWrap) {
+            val (keptLine, carryOver) = if (lastSpace > state.maxCharsPerLine / 2) {
                 updatedLine.substring(0, lastSpace) to updatedLine.substring(lastSpace + 1)
             } else {
                 updatedLine.substring(0, state.maxCharsPerLine) to updatedLine.substring(state.maxCharsPerLine)
             }
-            val splitCol = if (isSpaceWrap) lastSpace + 1 else state.maxCharsPerLine
 
             currentLines[lineIdx] = keptLine
             val nextLineIdx = lineIdx + 1
@@ -369,7 +424,7 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
 
             updateLinesAndScheduleSave(
                 lines = currentLines,
-                overstrikes = shiftOverstrikesOnWrap(updatedOverstrikes, lineIdx, splitCol, isSpaceWrap),
+                overstrikes = shiftOverstrikesOnInsert(updatedOverstrikes, nextLineIdx),
                 newLine = nextLineIdx,
                 newCol = carryOver.length,
                 struckChar = char
@@ -439,7 +494,7 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
 
         updateLinesAndScheduleSave(
             lines = currentLines,
-            overstrikes = shiftOverstrikesOnLineSplit(state.overstrikesByLine, lineIdx, colIdx),
+            overstrikes = shiftOverstrikesOnInsert(state.overstrikesByLine, nextLineIdx),
             newLine = nextLineIdx,
             newCol = 0,
             struckChar = '\n',
@@ -470,35 +525,24 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
             soundEngine.playSpacebar()
             updateLinesAndScheduleSave(
                 lines = currentLines,
-                overstrikes = shiftOverstrikesOnCharDelete(state.overstrikesByLine, lineIdx, colIdx - 1),
+                overstrikes = state.overstrikesByLine,
                 newLine = lineIdx,
                 newCol = colIdx - 1,
                 struckChar = ' '
             )
         } else if (lineIdx > 0) {
             val prevLine = currentLines[lineIdx - 1]
-            if (prevLine.length + currentLine.length <= state.maxCharsPerLine) {
-                val merged = prevLine + currentLine
-                currentLines[lineIdx - 1] = merged
-                currentLines.removeAt(lineIdx)
-                soundEngine.playCarriageReturn()
-                updateLinesAndScheduleSave(
-                    lines = currentLines,
-                    overstrikes = shiftOverstrikesOnMerge(state.overstrikesByLine, lineIdx, prevLine.length),
-                    newLine = lineIdx - 1,
-                    newCol = prevLine.length,
-                    struckChar = ' '
-                )
-            } else {
-                // Combined lines would exceed carriage platen width; safely position carriage at end of previous line without data loss
-                soundEngine.playCarriageReturn()
-                _uiState.update {
-                    it.copy(
-                        cursorLine = lineIdx - 1,
-                        cursorCol = prevLine.length
-                    )
-                }
-            }
+            val merged = (prevLine + currentLine).take(state.maxCharsPerLine)
+            currentLines[lineIdx - 1] = merged
+            currentLines.removeAt(lineIdx)
+            soundEngine.playCarriageReturn()
+            updateLinesAndScheduleSave(
+                lines = currentLines,
+                overstrikes = shiftOverstrikesOnDelete(state.overstrikesByLine, lineIdx),
+                newLine = lineIdx - 1,
+                newCol = prevLine.length.coerceAtMost(state.maxCharsPerLine),
+                struckChar = ' '
+            )
         }
     }
 
@@ -531,7 +575,7 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
 
     fun moveCursorToLineEnd() {
         val state = _uiState.value
-        val endCol = state.lines.getOrNull(state.cursorLine)?.length ?: 0
+        val endCol = state.lines[state.cursorLine].length
         if (state.cursorCol != endCol) {
             soundEngine.playSpacebar()
             _uiState.update { it.copy(cursorCol = endCol) }
@@ -540,6 +584,37 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
 
     fun scrollPaperLines(deltaLines: Int) {
         onArrowNavigate(dLine = deltaLines, dCol = 0)
+    }
+
+    private fun shiftOverstrikesOnInsert(
+        map: Map<Int, Map<Int, List<Char>>>,
+        insertedLineIdx: Int
+    ): Map<Int, Map<Int, List<Char>>> {
+        if (map.isEmpty()) return map
+        val result = HashMap<Int, Map<Int, List<Char>>>(map.size)
+        for ((line, cols) in map) {
+            if (line >= insertedLineIdx) {
+                result[line + 1] = cols
+            } else {
+                result[line] = cols
+            }
+        }
+        return result
+    }
+
+    private fun shiftOverstrikesOnDelete(
+        map: Map<Int, Map<Int, List<Char>>>,
+        deletedLineIdx: Int
+    ): Map<Int, Map<Int, List<Char>>> {
+        if (map.isEmpty()) return map
+        val result = HashMap<Int, Map<Int, List<Char>>>(map.size)
+        for ((line, cols) in map) {
+            when {
+                line < deletedLineIdx -> result[line] = cols
+                line > deletedLineIdx -> result[line - 1] = cols
+            }
+        }
+        return result
     }
 
     private fun updateLinesAndScheduleSave(
@@ -555,16 +630,27 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
         for (i in lines.indices) {
             chars += lines[i].length
         }
+        val livePages = ((lines.size - 1).coerceAtLeast(0) / _uiState.value.linesPerPage) + 1
 
-        _uiState.update {
-            it.copy(
+        _uiState.update { state ->
+            val updatedActive = state.activeDocument?.copy(
+                pageCount = livePages,
+                wordCount = words
+            )
+            state.copy(
+                activeDocument = updatedActive,
+                documents = if (updatedActive != null) {
+                    state.documents.map { if (it.uri == updatedActive.uri) updatedActive else it }
+                } else {
+                    state.documents
+                },
                 lines = lines,
                 overstrikesByLine = overstrikes,
                 cursorLine = newLine,
                 cursorCol = newCol,
                 saveStatus = SaveStatus.UNSAVED,
-                strikeTriggerId = if (struckChar != '\n') it.strikeTriggerId + 1 else it.strikeTriggerId,
-                ribbonSpoolAngle = (it.ribbonSpoolAngle + 7.5f) % 360f,
+                strikeTriggerId = if (struckChar != '\n') state.strikeTriggerId + 1 else state.strikeTriggerId,
+                ribbonSpoolAngle = (state.ribbonSpoolAngle + 7.5f) % 360f,
                 lastStruckChar = struckChar,
                 wordCount = words,
                 charCount = chars
@@ -579,225 +665,70 @@ class TypewriterViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private suspend fun saveCurrentImmediately() {
-        val doc = _uiState.value.activeDocument ?: return
-        val snapshotLines = _uiState.value.lines
-        val content = snapshotLines.joinToString("\n")
+        val state = _uiState.value
+        val folderUri = state.folderUri ?: return
+        var doc = state.activeDocument
+
+        if (doc == null) {
+            val hasTypedContent = state.lines.any { it.isNotBlank() }
+            if (!hasTypedContent) return
+            val firstLineHeading = state.lines.firstOrNull { it.isNotBlank() }
+                ?.trimStart('#', ' ')
+                ?.take(24)
+                ?.ifBlank { "Note 1" } ?: "Note 1"
+            doc = repository.createNewDocument(folderUri, firstLineHeading) ?: return
+            val updatedDocs = repository.listMarkdownDocuments(folderUri)
+            repository.saveLastDocUri(doc.uri)
+            _uiState.update {
+                it.copy(
+                    documents = updatedDocs,
+                    activeDocument = doc
+                )
+            }
+        }
+
+        val content = _uiState.value.lines.joinToString("\n")
         _uiState.update { it.copy(saveStatus = SaveStatus.SAVING) }
         val ok = repository.writeDocumentContent(doc.uri, content)
-        _uiState.update { current ->
-            if (ok && current.lines == snapshotLines) {
-                current.copy(saveStatus = SaveStatus.SAVED)
-            } else {
-                current.copy(saveStatus = SaveStatus.UNSAVED)
-            }
+        if (ok) {
+            _uiState.update { it.copy(saveStatus = SaveStatus.SAVED) }
+            BookshelfAppWidgetProvider.notifyWidgetsChanged(getApplication())
         }
     }
 
-    companion object {
-        internal fun shiftOverstrikesOnCharInsert(
-            map: Map<Int, Map<Int, List<Char>>>,
-            lineIdx: Int,
-            colIdx: Int
-        ): Map<Int, Map<Int, List<Char>>> {
-            val lineMap = map[lineIdx] ?: return map
-            val newLineMap = HashMap<Int, List<Char>>(lineMap.size)
-            for ((col, chars) in lineMap) {
-                if (col < colIdx) {
-                    newLineMap[col] = chars
-                } else {
-                    newLineMap[col + 1] = chars
+    private fun parseTextToTypewriterLines(raw: String, maxCols: Int): List<String> {
+        if (raw.isEmpty()) return listOf("")
+        val result = mutableListOf<String>()
+        raw.lines().forEach { paragraph ->
+            if (paragraph.length <= maxCols) {
+                result.add(paragraph)
+            } else {
+                var remaining = paragraph
+                while (remaining.length > maxCols) {
+                    val splitAt = remaining.lastIndexOf(' ', maxCols).takeIf { it > maxCols / 2 } ?: maxCols
+                    result.add(remaining.substring(0, splitAt))
+                    remaining = remaining.substring(splitAt).trimStart()
                 }
+                result.add(remaining)
             }
-            val result = HashMap<Int, Map<Int, List<Char>>>(map.size)
-            result.putAll(map)
-            result[lineIdx] = newLineMap
-            return result
         }
+        return if (result.isEmpty()) listOf("") else result
+    }
 
-        internal fun shiftOverstrikesOnCharDelete(
-            map: Map<Int, Map<Int, List<Char>>>,
-            lineIdx: Int,
-            deletedColIdx: Int
-        ): Map<Int, Map<Int, List<Char>>> {
-            val lineMap = map[lineIdx] ?: return map
-            val newLineMap = HashMap<Int, List<Char>>(lineMap.size)
-            for ((col, chars) in lineMap) {
-                when {
-                    col < deletedColIdx -> newLineMap[col] = chars
-                    col > deletedColIdx -> newLineMap[col - 1] = chars
+    private fun countWordsFast(lines: List<String>): Int {
+        var count = 0
+        for (i in lines.indices) {
+            val s = lines[i]
+            var inWord = false
+            for (j in 0 until s.length) {
+                if (s[j].isWhitespace()) {
+                    inWord = false
+                } else if (!inWord) {
+                    inWord = true
+                    count++
                 }
             }
-            val result = HashMap<Int, Map<Int, List<Char>>>(map.size)
-            for ((line, cols) in map) {
-                if (line != lineIdx) {
-                    result[line] = cols
-                }
-            }
-            if (newLineMap.isNotEmpty()) {
-                result[lineIdx] = newLineMap
-            }
-            return result
         }
-
-        internal fun shiftOverstrikesOnLineSplit(
-            map: Map<Int, Map<Int, List<Char>>>,
-            splitLineIdx: Int,
-            splitCol: Int
-        ): Map<Int, Map<Int, List<Char>>> {
-            if (map.isEmpty()) return map
-            val result = HashMap<Int, Map<Int, List<Char>>>(map.size + 1)
-            val currentLineMap = map[splitLineIdx]
-            val keptMap = mutableMapOf<Int, List<Char>>()
-            val carryMap = mutableMapOf<Int, List<Char>>()
-            currentLineMap?.forEach { (col, chars) ->
-                if (col < splitCol) {
-                    keptMap[col] = chars
-                } else {
-                    carryMap[col - splitCol] = chars
-                }
-            }
-            for ((line, cols) in map) {
-                when {
-                    line < splitLineIdx -> result[line] = cols
-                    line > splitLineIdx -> result[line + 1] = cols
-                }
-            }
-            if (keptMap.isNotEmpty()) result[splitLineIdx] = keptMap
-            if (carryMap.isNotEmpty()) result[splitLineIdx + 1] = carryMap
-            return result
-        }
-
-        internal fun shiftOverstrikesOnInsert(
-            map: Map<Int, Map<Int, List<Char>>>,
-            insertedLineIdx: Int
-        ): Map<Int, Map<Int, List<Char>>> {
-            if (map.isEmpty()) return map
-            val result = HashMap<Int, Map<Int, List<Char>>>(map.size)
-            for ((line, cols) in map) {
-                if (line >= insertedLineIdx) {
-                    result[line + 1] = cols
-                } else {
-                    result[line] = cols
-                }
-            }
-            return result
-        }
-
-        internal fun shiftOverstrikesOnDelete(
-            map: Map<Int, Map<Int, List<Char>>>,
-            deletedLineIdx: Int
-        ): Map<Int, Map<Int, List<Char>>> {
-            if (map.isEmpty()) return map
-            val result = HashMap<Int, Map<Int, List<Char>>>(map.size)
-            for ((line, cols) in map) {
-                when {
-                    line < deletedLineIdx -> result[line] = cols
-                    line > deletedLineIdx -> result[line - 1] = cols
-                }
-            }
-            return result
-        }
-
-        internal fun shiftOverstrikesOnWrap(
-            map: Map<Int, Map<Int, List<Char>>>,
-            wrappedLineIdx: Int,
-            splitCol: Int,
-            isSpaceWrap: Boolean = false
-        ): Map<Int, Map<Int, List<Char>>> {
-            if (map.isEmpty()) return map
-            val result = HashMap<Int, Map<Int, List<Char>>>(map.size + 1)
-            val currentLineMap = map[wrappedLineIdx]
-            val keptMap = mutableMapOf<Int, List<Char>>()
-            val carryMap = mutableMapOf<Int, List<Char>>()
-            val discardCol = if (isSpaceWrap) splitCol - 1 else -1
-            currentLineMap?.forEach { (col, chars) ->
-                when {
-                    col == discardCol -> {
-                        // The space at this column was dropped during wrap; drop its overstrike
-                    }
-                    col < splitCol -> {
-                        keptMap[col] = chars
-                    }
-                    else -> {
-                        carryMap[col - splitCol] = chars
-                    }
-                }
-            }
-            for ((line, cols) in map) {
-                when {
-                    line < wrappedLineIdx -> result[line] = cols
-                    line > wrappedLineIdx -> result[line + 1] = cols
-                }
-            }
-            if (keptMap.isNotEmpty()) result[wrappedLineIdx] = keptMap
-            if (carryMap.isNotEmpty()) result[wrappedLineIdx + 1] = carryMap
-            return result
-        }
-
-        internal fun shiftOverstrikesOnMerge(
-            map: Map<Int, Map<Int, List<Char>>>,
-            mergedLineIdx: Int,
-            prevLineLen: Int
-        ): Map<Int, Map<Int, List<Char>>> {
-            if (map.isEmpty()) return map
-            val result = HashMap<Int, Map<Int, List<Char>>>(map.size)
-            val prevLineMap = map[mergedLineIdx - 1].orEmpty().toMutableMap()
-            val currentLineMap = map[mergedLineIdx].orEmpty()
-            for ((col, chars) in currentLineMap) {
-                prevLineMap[col + prevLineLen] = chars
-            }
-            if (prevLineMap.isNotEmpty()) {
-                result[mergedLineIdx - 1] = prevLineMap
-            }
-            for ((line, cols) in map) {
-                when {
-                    line < mergedLineIdx - 1 -> result[line] = cols
-                    line > mergedLineIdx -> result[line - 1] = cols
-                }
-            }
-            return result
-        }
-
-        internal fun parseTextToTypewriterLines(raw: String, maxCols: Int): List<String> {
-            if (raw.isEmpty()) return listOf("")
-            val result = mutableListOf<String>()
-            raw.lines().forEach { paragraph ->
-                if (paragraph.length <= maxCols) {
-                    result.add(paragraph)
-                } else {
-                    var remaining = paragraph
-                    while (remaining.length > maxCols) {
-                        val splitAt = remaining.lastIndexOf(' ', maxCols).takeIf { it > maxCols / 2 } ?: maxCols
-                        result.add(remaining.substring(0, splitAt))
-                        remaining = remaining.substring(splitAt).trimStart()
-                    }
-                    if (remaining.isNotEmpty()) {
-                        result.add(remaining)
-                    }
-                }
-            }
-            return if (result.isEmpty()) listOf("") else result
-        }
-
-        /**
-         * Zero-allocation single-pass word counter (replaces Regex("\\s+").split() across all lines).
-         */
-        internal fun countWordsFast(lines: List<String>): Int {
-            var count = 0
-            for (i in lines.indices) {
-                val s = lines[i]
-                var inWord = false
-                for (j in 0 until s.length) {
-                    if (s[j].isWhitespace()) {
-                        inWord = false
-                    } else if (!inWord) {
-                        inWord = true
-                        count++
-                    }
-                }
-            }
-            return count
-        }
+        return count
     }
 }
-

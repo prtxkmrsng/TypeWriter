@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_bookshelf_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#261710"
+    android:orientation="vertical"
+    android:padding="6dp">
+
+    <!-- Top Brass & Walnut Header Bar (Native Crisp TextViews - Zero Stretching) -->
+    <LinearLayout
+        android:id="@+id/widget_header_bar"
+        android:layout_width="match_parent"
+        android:layout_height="28dp"
+        android:background="#180F0A"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="10dp"
+        android:paddingEnd="10dp">
+
+        <TextView
+            android:id="@+id/widget_header_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:fontFamily="monospace"
+            android:maxLines="1"
+            android:text="TYPEWRITER LIBRARY"
+            android:textColor="#E6C891"
+            android:textSize="11sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/widget_header_stats"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:maxLines="1"
+            android:text="0 BOOKS"
+            android:textColor="#C8A971"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Dynamic Multi-Shelf Container populated based on current widget height & width -->
+    <LinearLayout
+        android:id="@+id/widget_shelves_container"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="4dp"
+        android:layout_weight="1"
+        android:background="#150D08"
+        android:orientation="vertical" />
+
+</LinearLayout>

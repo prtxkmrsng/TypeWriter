@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="0dp"
+    android:layout_weight="1"
+    android:orientation="vertical">
+
+    <!-- Horizontal Row of Clickable Books (and Twilight Candles) sitting on the plank -->
+    <LinearLayout
+        android:id="@+id/shelf_books_row"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:gravity="bottom|start"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingTop="4dp"
+        android:paddingEnd="8dp" />
+
+    <!-- Empty Shelf Message -->
+    <TextView
+        android:id="@+id/shelf_empty_label"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fontFamily="monospace"
+        android:gravity="center"
+        android:text="SHELF EMPTY — TAP TO CONFIGURE OR BIND A NOTE"
+        android:textColor="#B8A382"
+        android:textSize="10sp"
+        android:visibility="gone" />
+
+    <!-- Theme-Synchronized Shelf Plank with Trim Highlight -->
+    <FrameLayout
+        android:id="@+id/shelf_plank_body"
+        android:layout_width="match_parent"
+        android:layout_height="10dp"
+        android:background="#4E301D">
+
+        <FrameLayout
+            android:id="@+id/shelf_plank_trim"
+            android:layout_width="match_parent"
+            android:layout_height="2dp"
+            android:background="#8C6D3B" />
+    </FrameLayout>
+
+</LinearLayout>

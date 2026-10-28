@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">TypeWriter</string>
+    <string name="bookshelf_widget_desc">Resizable TypeWriter Bookshelf displaying your Markdown notes as books on a shelf.</string>
 </resources>
